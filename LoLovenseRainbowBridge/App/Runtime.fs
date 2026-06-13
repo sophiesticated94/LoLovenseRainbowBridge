@@ -1,0 +1,377 @@
+namespace LoLovenseRainbowBridge.App
+
+open System
+open System.Threading
+open System.Threading.Tasks
+open LoLovenseRainbowBridge
+open LoLovenseRainbowBridge.Bridge
+open LoLovenseRainbowBridge.Bridge.Scoring
+open LoLovenseRainbowBridge.LeagueOfLegends
+open LoLovenseRainbowBridge.Lovense
+
+module Runtime =
+
+    type ConnectionFailureState =
+        {
+            LeagueFailureAttemptsSinceSuccess: int
+            LovenseFailureAttemptsSinceSuccess: int
+            LastLeagueError: string option
+            LastLovenseError: string option
+            LastSuccessfulLeagueAt: DateTimeOffset option
+            LastSuccessfulLovenseAt: DateTimeOffset option
+        }
+
+    let initialFailureState =
+        {
+            LeagueFailureAttemptsSinceSuccess = 0
+            LovenseFailureAttemptsSinceSuccess = 0
+            LastLeagueError = None
+            LastLovenseError = None
+            LastSuccessfulLeagueAt = None
+            LastSuccessfulLovenseAt = None
+        }
+
+    let private recordLeagueFailure error failureState =
+        {
+            failureState with
+                LeagueFailureAttemptsSinceSuccess = failureState.LeagueFailureAttemptsSinceSuccess + 1
+                LastLeagueError = Some error
+        }
+
+    let private recordLeagueSuccess now failureState =
+        {
+            failureState with
+                LeagueFailureAttemptsSinceSuccess = 0
+                LastLeagueError = None
+                LastSuccessfulLeagueAt = Some now
+        }
+
+    let private recordLovenseFailure error failureState =
+        {
+            failureState with
+                LovenseFailureAttemptsSinceSuccess = failureState.LovenseFailureAttemptsSinceSuccess + 1
+                LastLovenseError = Some error
+        }
+
+    let private recordLovenseSuccess now failureState =
+        {
+            failureState with
+                LovenseFailureAttemptsSinceSuccess = 0
+                LastLovenseError = None
+                LastSuccessfulLovenseAt = Some now
+        }
+
+    let private leagueErrorSummary error : obj =
+        match error with
+        | LeagueFetchError.ConnectionFailed(url, message) ->
+            box {| kind = "ConnectionFailed"; url = url; message = message |}
+        | LeagueFetchError.HttpFailure(url, statusCode, body) ->
+            box {| kind = "HttpFailure"; url = url; statusCode = statusCode; bodyLength = body.Length |}
+        | LeagueFetchError.InvalidJson(url, message, rawText) ->
+            box {| kind = "InvalidJson"; url = url; message = message; rawLength = rawText.Length |}
+        | LeagueFetchError.EmptyJson(url, rawText) ->
+            box {| kind = "EmptyJson"; url = url; rawLength = rawText.Length |}
+        | LeagueFetchError.UnexpectedFetchError(url, message, errorType) ->
+            box {| kind = "UnexpectedFetchError"; url = url; message = message; errorType = errorType |}
+
+    let private leagueErrorMessage error =
+        match error with
+        | LeagueFetchError.ConnectionFailed(_, message) -> message
+        | LeagueFetchError.HttpFailure(_, statusCode, _) -> $"HTTP {statusCode}"
+        | LeagueFetchError.InvalidJson(_, message, _) -> $"Invalid JSON: {message}"
+        | LeagueFetchError.EmptyJson _ -> "Empty JSON"
+        | LeagueFetchError.UnexpectedFetchError(_, message, _) -> message
+
+    let private lovenseErrorSummary error : obj =
+        match error with
+        | LovenseCommandError.NotConnected connectionError ->
+            box {| kind = "NotConnected"; connectionError = string connectionError |}
+        | LovenseCommandError.CommandEmitFailed(eventName, message) ->
+            box {| kind = "CommandEmitFailed"; eventName = eventName; message = message |}
+        | LovenseCommandError.CommandRejected(eventName, message) ->
+            box {| kind = "CommandRejected"; eventName = eventName; message = message |}
+        | LovenseCommandError.CommandTimeout(eventName, timeoutMs) ->
+            box {| kind = "CommandTimeout"; eventName = eventName; timeoutMs = timeoutMs |}
+        | LovenseCommandError.UnexpectedCommandError(eventName, message, errorType) ->
+            box {| kind = "UnexpectedCommandError"; eventName = eventName; message = message; errorType = errorType |}
+
+    let private lovenseErrorMessage error =
+        match error with
+        | LovenseCommandError.NotConnected connectionError -> $"Not connected: {connectionError}"
+        | LovenseCommandError.CommandEmitFailed(_, message) -> message
+        | LovenseCommandError.CommandRejected(_, message) -> message
+        | LovenseCommandError.CommandTimeout(_, timeoutMs) -> $"Command timed out after {timeoutMs}ms"
+        | LovenseCommandError.UnexpectedCommandError(_, message, _) -> message
+
+    let private printStatus (snapshot: BridgeSnapshot) (state: GeneratorState) (breakdown: IntensityBreakdown) =
+        printfn
+            "t=%6.1fs | K/D/A=%i/%i/%i | norm=%.2f | multikills=%i | pulse=%i | output=%i"
+            snapshot.GameTime
+            snapshot.ActivePlayer.Kills
+            snapshot.ActivePlayer.Deaths
+            snapshot.ActivePlayer.Assists
+            breakdown.NormalizedScore
+            state.MultikillCount
+            breakdown.ActivePulseBoost
+            breakdown.Intensity
+
+    let private handleUnavailable
+        (runtimeConfig: RuntimeConfig)
+        (lovenseConfig: LovenseConfig)
+        (lovenseClient: LovenseClient)
+        (logger: StructuredSessionLogger)
+        (state: GeneratorState)
+        (failureState: ConnectionFailureState)
+        (ct: CancellationToken)
+        =
+        task {
+            let now = DateTimeOffset.UtcNow
+            let stopPlan = Mapping.stopPlan lovenseConfig StopCommand
+            let stopAction = Mapping.planActionString stopPlan
+            let shouldSendStop = shouldSendCommand runtimeConfig.ResendEveryMs now stopAction state
+
+            logger.Info(
+                "runtime.unavailable.stop_decision",
+                "Decided whether to send Lovense stop command while data is unavailable.",
+                {|
+                    shouldSend = shouldSendStop
+                    now = now
+                    previousLastSent = state.LastSent
+                    previousLastSentCommand = state.LastSentCommand
+                    commandAction = stopAction
+                |}
+            )
+
+            if shouldSendStop then
+                let! result = lovenseClient.SendCommandPlanAsync(stopPlan, 0, ct)
+
+                match result with
+                | Ok _ ->
+                    let nextFailureState = recordLovenseSuccess now failureState
+                    return { state with LastSent = Some(0, now); LastSentCommand = Some(stopAction, now) }, nextFailureState
+
+                | Error error ->
+                    let nextFailureState = recordLovenseFailure (lovenseErrorMessage error) failureState
+                    printfn "Could not send Lovense stop command: %s" (lovenseErrorMessage error)
+                    logger.Error(
+                        "runtime.unavailable.stop_error",
+                        "Could not send Lovense stop command.",
+                        {|
+                            error = lovenseErrorSummary error
+                            attemptSinceLastSuccess = nextFailureState.LovenseFailureAttemptsSinceSuccess
+                        |}
+                    )
+
+                    return state, nextFailureState
+            else
+                return state, failureState
+        }
+
+    let rec loop
+        (runtimeConfig: RuntimeConfig)
+        (scoringConfig: ScoringConfig)
+        (lovenseConfig: LovenseConfig)
+        (leagueClient: LeagueLiveClient)
+        (lovenseClient: LovenseClient)
+        (logger: StructuredSessionLogger)
+        (state: GeneratorState)
+        (failureState: ConnectionFailureState)
+        (ct: CancellationToken)
+        : Task<unit>
+        =
+        task {
+            try
+                let! fetchResult = leagueClient.FetchAllGameDataAsync ct
+
+                match fetchResult with
+                | Error error ->
+                    let nextFailureState = recordLeagueFailure (leagueErrorMessage error) failureState
+
+                    printfn
+                        "Waiting for active LoL game. Attempt since last success: %i. Error: %s"
+                        nextFailureState.LeagueFailureAttemptsSinceSuccess
+                        (leagueErrorMessage error)
+
+                    logger.Warn(
+                        "runtime.league.fetch_failed",
+                        "League data fetch failed; retrying after unavailable delay.",
+                        {|
+                            error = leagueErrorSummary error
+                            attemptSinceLastSuccess = nextFailureState.LeagueFailureAttemptsSinceSuccess
+                            retryDelayMs = runtimeConfig.UnavailableRetryMs
+                        |}
+                    )
+
+                    let! nextState, nextFailureState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger state nextFailureState ct
+                    do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
+                    return! loop runtimeConfig scoringConfig lovenseConfig leagueClient lovenseClient logger nextState nextFailureState ct
+
+                | Ok gameData ->
+                    match Parser.parseGameSnapshotResult gameData.Root with
+                    | Error error ->
+                        let nextFailureState = recordLeagueFailure (string error) failureState
+
+                        printfn "LoL data available, but active player could not be parsed."
+                        logger.Warn(
+                            "runtime.league.parse_failed",
+                            "LoL data available but parse failed; retrying after unavailable delay.",
+                            {|
+                                parseError = error
+                                attemptSinceLastSuccess = nextFailureState.LeagueFailureAttemptsSinceSuccess
+                                retryDelayMs = runtimeConfig.UnavailableRetryMs
+                                rawLength = gameData.RawText.Length
+                            |}
+                        )
+
+                        let! nextState, nextFailureState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger state nextFailureState ct
+                        do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
+                        return! loop runtimeConfig scoringConfig lovenseConfig leagueClient lovenseClient logger nextState nextFailureState ct
+
+                    | Ok parsed ->
+                        let now = DateTimeOffset.UtcNow
+                        let failureAfterLeagueSuccess = recordLeagueSuccess now failureState
+                        let lolSnapshot = parsed.Snapshot
+                        let snapshot = Mapper.toBridgeSnapshot scoringConfig lolSnapshot
+                        let evolved = evolve scoringConfig snapshot state
+                        let breakdown = computeIntensityBreakdown scoringConfig snapshot evolved
+                        let intensity = breakdown.Intensity
+                        let commandPlan = Mapping.plan lovenseConfig state snapshot evolved breakdown
+                        let actionString = Mapping.planActionString commandPlan
+
+                        logger.Info(
+                            "runtime.league.success",
+                            "League data fetched and parsed successfully; resetting League retry counter.",
+                            {|
+                                previousAttemptsSinceLastSuccess = failureState.LeagueFailureAttemptsSinceSuccess
+                                warnings = parsed.Warnings
+                            |}
+                        )
+
+                        if not parsed.Warnings.IsEmpty then
+                            logger.Warn(
+                                "runtime.league.parse_warnings",
+                                "League data parsed with optional fields defaulted.",
+                                {|
+                                    warnings = parsed.Warnings
+                                    rawLength = gameData.RawText.Length
+                                |}
+                            )
+
+                        logger.Debug(
+                            "runtime.calculation",
+                            "Calculated Lovense intensity from League data.",
+                            {|
+                                activePlayer =
+                                    {|
+                                        id = snapshot.ActivePlayer.Id
+                                        kills = snapshot.ActivePlayer.Kills
+                                        deaths = snapshot.ActivePlayer.Deaths
+                                        assists = snapshot.ActivePlayer.Assists
+                                        creepScore = snapshot.ActivePlayer.CreepScore
+                                        wardScore = snapshot.ActivePlayer.WardScore
+                                        level = snapshot.ActivePlayer.Level
+                                    |}
+                                state =
+                                    {|
+                                        previousSeenEvents = state.SeenEventIds.Count
+                                        evolvedSeenEvents = evolved.SeenEventIds.Count
+                                        previousPulseCount = state.Pulses.Length
+                                        evolvedPulseCount = evolved.Pulses.Length
+                                        multikillCount = evolved.MultikillCount
+                                        lastSent = evolved.LastSent
+                                        lastSentCommand = evolved.LastSentCommand
+                                    |}
+                                breakdown = breakdown
+                                commandPlan =
+                                    {|
+                                        action = actionString
+                                        reasons = commandPlan.Reasons |> List.map Mapping.reasonToString
+                                        actions = commandPlan.Actions |> List.map Mapping.actionToString
+                                        timeSec = commandPlan.TimeSec
+                                        stopPrevious = commandPlan.StopPrevious
+                                    |}
+                            |}
+                        )
+
+                        printStatus snapshot evolved breakdown
+
+                        let! nextState =
+                            task {
+                                let shouldSendValue = shouldSendCommand runtimeConfig.ResendEveryMs now actionString evolved
+
+                                logger.Info(
+                                    "runtime.send_decision",
+                                    "Decided whether to send Lovense command.",
+                                    {|
+                                        shouldSend = shouldSendValue
+                                        intensity = intensity
+                                        now = now
+                                        previousLastSent = evolved.LastSent
+                                        previousLastSentCommand = evolved.LastSentCommand
+                                        resendEveryMs = runtimeConfig.ResendEveryMs
+                                        commandAction = actionString
+                                        commandReasons = commandPlan.Reasons |> List.map Mapping.reasonToString
+                                    |}
+                                )
+
+                                if shouldSendValue then
+                                    let! lovenseResult = lovenseClient.SendCommandPlanAsync(commandPlan, intensity, ct)
+
+                                    match lovenseResult with
+                                    | Ok _ ->
+                                        let nextFailureState = recordLovenseSuccess now failureAfterLeagueSuccess
+
+                                        logger.Info(
+                                            "runtime.lovense.success",
+                                            "Lovense command sent successfully; resetting Lovense retry counter.",
+                                            {|
+                                                previousAttemptsSinceLastSuccess = failureAfterLeagueSuccess.LovenseFailureAttemptsSinceSuccess
+                                            |}
+                                        )
+
+                                        return { evolved with LastSent = Some(intensity, now); LastSentCommand = Some(actionString, now) }, nextFailureState, runtimeConfig.PollMs
+
+                                    | Error error ->
+                                        let nextFailureState = recordLovenseFailure (lovenseErrorMessage error) failureAfterLeagueSuccess
+
+                                        logger.Error(
+                                            "runtime.lovense.send_failed",
+                                            "Lovense command failed; retrying after unavailable delay.",
+                                            {|
+                                                error = lovenseErrorSummary error
+                                                attemptSinceLastSuccess = nextFailureState.LovenseFailureAttemptsSinceSuccess
+                                                retryDelayMs = runtimeConfig.UnavailableRetryMs
+                                            |}
+                                        )
+
+                                        return evolved, nextFailureState, runtimeConfig.UnavailableRetryMs
+                                else
+                                    return evolved, failureAfterLeagueSuccess, runtimeConfig.PollMs
+                            }
+
+                        let nextGeneratorState, nextFailureState, delayMs = nextState
+
+                        do! Task.Delay(delayMs, ct)
+                        return! loop runtimeConfig scoringConfig lovenseConfig leagueClient lovenseClient logger nextGeneratorState nextFailureState ct
+
+            with
+            | :? OperationCanceledException ->
+                logger.Info("runtime.cancelled", "Runtime loop cancelled.")
+                return ()
+
+            | ex ->
+                printfn "Waiting for active LoL game / Lovense app. Error: %s" ex.Message
+                logger.Error(
+                    "runtime.loop_error",
+                    "Waiting for active LoL game / Lovense app after an error.",
+                    {|
+                        error = ex.Message
+                        errorType = ex.GetType().FullName
+                    |}
+                )
+
+                let! nextState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger state failureState ct
+                do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
+                let nextGeneratorState, nextFailureState = nextState
+                return! loop runtimeConfig scoringConfig lovenseConfig leagueClient lovenseClient logger nextGeneratorState nextFailureState ct
+        }

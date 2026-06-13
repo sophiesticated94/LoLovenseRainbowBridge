@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.0" />
+    <PackageReference Include="SocketIOClient" Version="4.0.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Constants.fs" />
+    <Compile Include="Shared.fs" />
+    <Compile Include="Configuration.fs" />
+    <Compile Include="Logging.fs" />
+
+    <Compile Include="Bridge\Domain.fs" />
+
+    <Compile Include="LeagueOfLegends\Contracts.fs" />
+    <Compile Include="LeagueOfLegends\Parser.fs" />
+    <Compile Include="LeagueOfLegends\Mapper.fs" />
+    <Compile Include="LeagueOfLegends\LiveClient.fs" />
+
+    <Compile Include="Lovense\Contracts.fs" />
+    <Compile Include="Lovense\Mapping.fs" />
+    <Compile Include="Lovense\Client.fs" />
+
+    <Compile Include="App\Runtime.fs" />
+
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+</Project>
