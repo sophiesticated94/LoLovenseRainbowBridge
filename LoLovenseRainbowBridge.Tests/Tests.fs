@@ -167,36 +167,34 @@ let functionProfile name enabled =
         Smoothing = 0.0
     }
 
-let functionTarget functionName layer operation expression =
-    {
-        FunctionName = functionName
-        StateSlot = ""
-        Layer = layer
-        Operation = operation
-        Expression = expression
-        Condition = ""
-        DurationSec = 0.0
-    }
-
-let stateTarget stateSlot operation expression =
-    {
-        FunctionName = ""
-        StateSlot = stateSlot
-        Layer = "State"
-        Operation = operation
-        Expression = expression
-        Condition = ""
-        DurationSec = 0.0
-    }
-
-let rule name kind trigger conditionValue targets =
+let functionRule name kind trigger condition targetFunctions layer operation expression =
     {
         Name = name
         Kind = kind
         Enabled = true
         Trigger = trigger
-        Condition = conditionValue
-        TargetFunctions = targets
+        Condition = condition
+        TargetFunctions = targetFunctions
+        StateSlot = ""
+        Layer = layer
+        Operation = operation
+        Expression = expression
+        DurationSec = 0.0
+    }
+
+let stateRule name kind trigger condition stateSlot operation expression =
+    {
+        Name = name
+        Kind = kind
+        Enabled = true
+        Trigger = trigger
+        Condition = condition
+        TargetFunctions = ""
+        StateSlot = stateSlot
+        Layer = "State"
+        Operation = operation
+        Expression = expression
+        DurationSec = 0.0
     }
 
 let ruleEngineLovenseConfig =
@@ -214,26 +212,14 @@ let ruleEngineLovenseConfig =
                             ]
                         Rules =
                             [
-                                rule "base" "BaseModifier" "" "" [
-                                    functionTarget "Vibrate" "Base" "Set" "Kills"
-                                    functionTarget "Vibrate1" "Base" "Set" "Kills * PositionLeftWeight"
-                                    functionTarget "Vibrate2" "Base" "Set" "Kills * PositionRightWeight"
-                                ]
-                                rule "track-max" "ThresholdModifier" "" "" [
-                                    stateTarget "MaxBaseThisIncarnation" "TrackMax" "FunctionBase_Vibrate"
-                                ]
-                                rule "floor" "ThresholdModifier" "" "" [
-                                    stateTarget "MinBaseThisIncarnation" "TrackMax" "MaxBaseThisIncarnation * 0.5"
-                                ]
-                                rule "clamp-floor" "ThresholdModifier" "" "" [
-                                    functionTarget "Vibrate" "Base" "ClampMin" "MinBaseThisIncarnation"
-                                ]
-                                rule "multikill-growth" "BaseModifier" "ActiveMultikill" "" [
-                                    functionTarget "Vibrate" "Base" "Add" "MultikillCount^2 - (MultikillCount - 1)^2"
-                                ]
-                                rule "kill-all" "TimedContribution" "ActiveKill" "" [
-                                    functionTarget "All" "Timed" "Add" "ActiveKillCount"
-                                ]
+                                functionRule "base-vibrate" "BaseModifier" "" "" "Vibrate" "Base" "Set" "Kills"
+                                functionRule "base-vibrate1" "BaseModifier" "" "" "Vibrate1" "Base" "Set" "Kills * PositionLeftWeight"
+                                functionRule "base-vibrate2" "BaseModifier" "" "" "Vibrate2" "Base" "Set" "Kills * PositionRightWeight"
+                                stateRule "track-max" "ThresholdModifier" "" "" "MaxBaseThisIncarnation" "TrackMax" "FunctionBase_Vibrate"
+                                stateRule "floor" "ThresholdModifier" "" "" "MinBaseThisIncarnation" "TrackMax" "MaxBaseThisIncarnation * 0.5"
+                                functionRule "clamp-floor" "ThresholdModifier" "" "" "Vibrate" "Base" "ClampMin" "MinBaseThisIncarnation"
+                                functionRule "multikill-growth" "BaseModifier" "ActiveMultikill" "" "Vibrate" "Base" "Add" "MultikillCount^2 - (MultikillCount - 1)^2"
+                                functionRule "kill-all" "TimedContribution" "ActiveKill" "" "All" "Timed" "Add" "ActiveKillCount"
                             ]
                 }
     }
@@ -768,12 +754,8 @@ let ``rule command builder applies heartbeat as effect without mutating base`` (
                         ruleEngineLovenseConfig.Mapping with
                             Rules =
                                 [
-                                    rule "base" "BaseModifier" "" "" [
-                                        functionTarget "Vibrate" "Base" "Set" "10"
-                                    ]
-                                    rule "heartbeat" "Effect" "" "HealthPercent <= 0.30" [
-                                        functionTarget "Vibrate" "Effect" "Add" "HeartbeatAmplitude * Pow(Max(0, Sin((LoopTimeSec / HeartbeatPulseCycleSec) * 2 * Pi)), 8)"
-                                    ]
+                                    functionRule "base" "BaseModifier" "" "" "Vibrate" "Base" "Set" "10"
+                                    functionRule "heartbeat" "Effect" "" "HealthPercent <= 0.30" "Vibrate" "Effect" "Add" "HeartbeatAmplitude * Pow(Max(0, Sin((LoopTimeSec / HeartbeatPulseCycleSec) * 2 * Pi)), 8)"
                                 ]
                     }
         }
@@ -807,13 +789,9 @@ let ``rule condition skips target evaluation and state mutation`` () =
                         ruleEngineLovenseConfig.Mapping with
                             Rules =
                                 [
-                                    rule "base" "BaseModifier" "" "" [
-                                        functionTarget "Vibrate" "Base" "Set" "10"
-                                    ]
-                                    rule "skipped" "Effect" "" "HealthPercent < 0.50" [
-                                        functionTarget "Vibrate" "Effect" "Add" "UnknownVariable + 20"
-                                        stateTarget "MaxBaseThisIncarnation" "Set" "99"
-                                    ]
+                                    functionRule "base" "BaseModifier" "" "" "Vibrate" "Base" "Set" "10"
+                                    functionRule "skipped" "Effect" "" "HealthPercent < 0.50" "Vibrate" "Effect" "Add" "UnknownVariable + 20"
+                                    stateRule "skipped-state" "Effect" "" "HealthPercent < 0.50" "MaxBaseThisIncarnation" "Set" "99"
                                 ]
                     }
         }
@@ -849,15 +827,9 @@ let ``rule value aggregation allows negative contributions and clamps final sum`
                         ruleEngineLovenseConfig.Mapping with
                             Rules =
                                 [
-                                    rule "base" "BaseModifier" "" "" [
-                                        functionTarget "Vibrate" "Base" "Set" "10"
-                                    ]
-                                    rule "negative" "Effect" "" "" [
-                                        functionTarget "Vibrate" "Effect" "Add" "-15"
-                                    ]
-                                    rule "positive-overflow" "Effect" "" "" [
-                                        functionTarget "Vibrate1" "Effect" "Add" "FunctionMax_Vibrate1 + 25"
-                                    ]
+                                    functionRule "base" "BaseModifier" "" "" "Vibrate" "Base" "Set" "10"
+                                    functionRule "negative" "Effect" "" "" "Vibrate" "Effect" "Add" "-15"
+                                    functionRule "positive-overflow" "Effect" "" "" "Vibrate1" "Effect" "Add" "FunctionMax_Vibrate1 + 25"
                                 ]
                     }
         }
@@ -891,10 +863,8 @@ let ``conditional heartbeat can use function range variables for asymmetric ster
                         ruleEngineLovenseConfig.Mapping with
                             Rules =
                                 [
-                                    rule "heartbeat-asymmetric" "Effect" "" "HealthPercent < 0.50" [
-                                        functionTarget "Vibrate1" "Effect" "Set" "0"
-                                        functionTarget "Vibrate2" "Effect" "Set" "FunctionMax_Vibrate2 * 0.5"
-                                    ]
+                                    functionRule "heartbeat-left-off" "Effect" "" "HealthPercent < 0.50" "Vibrate1" "Effect" "Set" "0"
+                                    functionRule "heartbeat-right-half" "Effect" "" "HealthPercent < 0.50" "Vibrate2" "Effect" "Set" "MaxValue * 0.5"
                                 ]
                     }
         }
@@ -913,6 +883,110 @@ let ``conditional heartbeat can use function range variables for asymmetric ster
             }
 
     Assert.Equal(0, frame.FunctionStates[Vibrate1].Final)
+    Assert.Equal(10, frame.FunctionStates[Vibrate2].Final)
+
+[<Fact>]
+let ``pipe separated target functions use target scoped max value`` () =
+    let rangeConfig =
+        {
+            ruleEngineLovenseConfig with
+                Mapping =
+                    {
+                        ruleEngineLovenseConfig.Mapping with
+                            FunctionProfiles =
+                                [
+                                    functionProfile "Vibrate" true
+                                    functionProfile "Pump" true
+                                    functionProfile "Stroke" true
+                                ]
+                            Rules =
+                                [
+                                    functionRule "half-range" "Effect" "" "" "Vibrate|Pump|Stroke" "Effect" "Add" "MaxValue * 0.5"
+                                ]
+                    }
+        }
+
+    let builder = LovenseCommandValueBuilder(rangeConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let frame =
+        builder.Build
+            {
+                PreviousState = initialState
+                Snapshot = snapshot (Some(1000.0, 1000.0)) []
+                EvolvedState = initialState
+                Position = None
+                Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+                LoopIteration = 1L
+                RuntimePollMs = 250
+            }
+
+    Assert.Equal(10.0, frame.FunctionStates[Vibrate].Effect, 6)
+    Assert.Equal(1.5, frame.FunctionStates[Pump].Effect, 6)
+    Assert.Equal(50.0, frame.FunctionStates[Stroke].Effect, 6)
+
+[<Fact>]
+let ``function rule condition can use target scoped max value`` () =
+    let rangeConfig =
+        {
+            ruleEngineLovenseConfig with
+                Mapping =
+                    {
+                        ruleEngineLovenseConfig.Mapping with
+                            FunctionProfiles =
+                                [
+                                    functionProfile "Vibrate" true
+                                    functionProfile "Pump" true
+                                ]
+                            Rules =
+                                [
+                                    functionRule "skip-small-ranges" "Effect" "" "MaxValue > 3" "Vibrate|Pump" "Effect" "Add" "MaxValue * 0.5"
+                                ]
+                    }
+        }
+
+    let builder = LovenseCommandValueBuilder(rangeConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let frame =
+        builder.Build
+            {
+                PreviousState = initialState
+                Snapshot = snapshot (Some(1000.0, 1000.0)) []
+                EvolvedState = initialState
+                Position = None
+                Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+                LoopIteration = 1L
+                RuntimePollMs = 250
+            }
+
+    Assert.Equal(10.0, frame.FunctionStates[Vibrate].Effect, 6)
+    Assert.Equal(0.0, frame.FunctionStates[Pump].Effect, 6)
+
+[<Fact>]
+let ``function max remains available for explicit cross function expressions`` () =
+    let rangeConfig =
+        {
+            ruleEngineLovenseConfig with
+                Mapping =
+                    {
+                        ruleEngineLovenseConfig.Mapping with
+                            Rules =
+                                [
+                                    functionRule "explicit-range" "Effect" "" "" "Vibrate2" "Effect" "Set" "FunctionMax_Vibrate2 * 0.5"
+                                ]
+                    }
+        }
+
+    let builder = LovenseCommandValueBuilder(rangeConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let frame =
+        builder.Build
+            {
+                PreviousState = initialState
+                Snapshot = snapshot (Some(400.0, 1000.0)) []
+                EvolvedState = initialState
+                Position = None
+                Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+                LoopIteration = 1L
+                RuntimePollMs = 250
+            }
+
     Assert.Equal(10, frame.FunctionStates[Vibrate2].Final)
 
 [<Fact>]

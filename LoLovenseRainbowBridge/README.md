@@ -186,26 +186,10 @@ The bridge can run in two Lovense mapping modes:
         "Name": "multikill-square-growth",
         "Kind": "BaseModifier",
         "Trigger": "ActiveMultikill",
-        "TargetFunctions": [
-          {
-            "FunctionName": "Vibrate",
-            "Layer": "Base",
-            "Operation": "Add",
-            "Expression": "MultikillCount^2 - (MultikillCount - 1)^2"
-          },
-          {
-            "FunctionName": "Vibrate1",
-            "Layer": "Base",
-            "Operation": "Add",
-            "Expression": "(MultikillCount^2 - (MultikillCount - 1)^2) * PositionLeftWeight"
-          },
-          {
-            "FunctionName": "Vibrate2",
-            "Layer": "Base",
-            "Operation": "Add",
-            "Expression": "(MultikillCount^2 - (MultikillCount - 1)^2) * PositionRightWeight"
-          }
-        ]
+        "TargetFunctions": "Vibrate",
+        "Layer": "Base",
+        "Operation": "Add",
+        "Expression": "MultikillCount^2 - (MultikillCount - 1)^2"
       }
     ]
   }
@@ -219,7 +203,8 @@ the configurable rule engine:
 
 - the rule input builder exposes raw LoL stats, detected events, calculated helper variables, previous command values, and minimap context
 - rules transform those inputs into per-function layers: base, timed, effect, other, and final
-- one rule can update many functions through `TargetFunctions`, so `Vibrate`, `Vibrate1`, and `Vibrate2` can share the same idea but use different expressions
+- one rule can update many functions through pipe-separated `TargetFunctions`, for example `Vibrate|Pump|Stroke`
+- one rule has one expression and operation; use multiple rules when functions need different expressions
 - rules can declare `Condition`; it is checked before target expressions run, so skipped rules do not mutate state
 - expressions are evaluated by NCalc; the bridge also accepts natural power syntax such as `MultikillCount^2`
 - the command value builder aggregates rule outputs per function before the command formatter creates the Lovense action string
@@ -334,7 +319,7 @@ configuration rules. The code-owned pieces are the finite rule operations,
 Lovense function ranges, state machine slots, expression evaluation, and command
 formatting.
 
-Each rule target can return any numeric value, including a negative value. Base
+Each rule can return any numeric value, including a negative value. Base
 rules run first and update the `Base` layer, but they do not count as an extra
 temporary contribution. Non-base rules add to `Timed`, `Effect`, or `Other`.
 Final output is materialized per Lovense function as:
@@ -377,22 +362,21 @@ health as amplitude and a cyclic trigonometric expression as the waveform:
   "Name": "heartbeat-near-death-effect",
   "Kind": "Effect",
   "Condition": "HealthPercent <= LowHealthHeartbeatThreshold",
-  "TargetFunctions": [
-    {
-      "FunctionName": "Vibrate",
-      "Layer": "Effect",
-      "Operation": "Add",
-      "Expression": "HeartbeatAmplitude * Pow(Max(0, Sin((LoopTimeSec / HeartbeatPulseCycleSec) * 2 * Pi)), 8)"
-    }
-  ]
+  "TargetFunctions": "Vibrate",
+  "Layer": "Effect",
+  "Operation": "Add",
+  "Expression": "HeartbeatAmplitude * Pow(Max(0, Sin((LoopTimeSec / HeartbeatPulseCycleSec) * 2 * Pi)), 8)"
 }
 ```
 
 Most of the cycle stays near zero; the positive sine peak is sharpened by
 `Pow(..., 8)`. Lower HP means a larger final heartbeat contribution. Users can
 replace that expression with another cyclic rule without changing code.
-Range variables such as `FunctionMax_Vibrate2` are available too, so a rule can
-express "50% on the right motor" as `FunctionMax_Vibrate2 * 0.5`.
+Every function expanded from `TargetFunctions` gets local `MinValue` and
+`MaxValue` variables. A rule targeting `Vibrate|Pump|Stroke` with
+`Expression = "MaxValue * 0.5"` evaluates to `10`, `1.5`, and `50` before final
+rounding/clamping. Range variables such as `FunctionMax_Vibrate2` are also
+available for explicit cross-function references.
 
 Capability filtering is controlled by:
 

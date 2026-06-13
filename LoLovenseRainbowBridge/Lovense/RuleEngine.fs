@@ -465,12 +465,6 @@ type RuleInputBuilder(scoringConfig: ScoringConfig) =
 
 type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExpressionEvaluator) =
 
-    let targetName (target: LovenseRuleTargetConfig) =
-        if String.Equals(target.Layer, "State", StringComparison.OrdinalIgnoreCase) then
-            target.StateSlot
-        else
-            target.FunctionName
-
     let triggerMatches input variables trigger =
         match trigger |> Option.ofObj |> Option.defaultValue "" with
         | value when String.IsNullOrWhiteSpace value -> true
@@ -492,6 +486,23 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
                 | Ok value -> value <> 0.0
                 | Error _ -> false
 
+    let ruleTargetName (rule: LovenseRuleConfig) =
+        if String.Equals(rule.Layer, "State", StringComparison.OrdinalIgnoreCase) then
+            rule.StateSlot
+        else
+            rule.TargetFunctions
+
+    let targetFunctions (rule: LovenseRuleConfig) =
+        rule.TargetFunctions.Split('|', StringSplitOptions.RemoveEmptyEntries ||| StringSplitOptions.TrimEntries)
+        |> Array.choose LovenseActionCodec.functionFromName
+        |> Array.toList
+
+    let targetScopedVariables fn variables =
+        let range = LovenseFunctionRanges.get fn
+        variables
+        |> Map.add "MinValue" (float range.Min)
+        |> Map.add "MaxValue" (float range.Max)
+
     let applyLayerOperation operation value layer =
         match operation |> Option.ofObj |> Option.defaultValue "" |> fun v -> v.ToUpperInvariant() with
         | "SET" -> value
@@ -503,35 +514,32 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
         | "CLEAR" -> 0.0
         | _ -> layer
 
-    let applyFunctionTarget rule target value layers =
-        match LovenseRuleInternals.functionFromConfig target.FunctionName with
-        | None -> layers
-        | Some fn ->
-            LovenseRuleInternals.updateLayer
-                fn
-                (fun layer ->
-                    match (target.Layer |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant() with
-                    | "BASE" -> { layer with Base = applyLayerOperation target.Operation value layer.Base }
-                    | "TIMED" -> { layer with Timed = applyLayerOperation target.Operation value layer.Timed }
-                    | "EFFECT" -> { layer with Effect = applyLayerOperation target.Operation value layer.Effect }
-                    | "OTHER" -> { layer with Other = applyLayerOperation target.Operation value layer.Other }
-                    | _ -> layer)
-                rule.Name
-                layers
+    let applyFunctionTarget rule fn value layers =
+        LovenseRuleInternals.updateLayer
+            fn
+            (fun layer ->
+                match (rule.Layer |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant() with
+                | "BASE" -> { layer with Base = applyLayerOperation rule.Operation value layer.Base }
+                | "TIMED" -> { layer with Timed = applyLayerOperation rule.Operation value layer.Timed }
+                | "EFFECT" -> { layer with Effect = applyLayerOperation rule.Operation value layer.Effect }
+                | "OTHER" -> { layer with Other = applyLayerOperation rule.Operation value layer.Other }
+                | _ -> layer)
+            rule.Name
+            layers
 
-    let applyStateTarget rule target value state =
-        let current = LovenseRuleInternals.stateSlotValue target.StateSlot state
+    let applyStateTarget rule value state =
+        let current = LovenseRuleInternals.stateSlotValue rule.StateSlot state
 
-        match (target.Operation |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant() with
-        | "SET" -> LovenseRuleInternals.setStateSlot target.StateSlot value state
-        | "ADD" -> LovenseRuleInternals.setStateSlot target.StateSlot (current + value) state
-        | "SUBTRACT" -> LovenseRuleInternals.setStateSlot target.StateSlot (current - value) state
-        | "MULTIPLY" -> LovenseRuleInternals.setStateSlot target.StateSlot (current * value) state
-        | "TRACKMAX" -> LovenseRuleInternals.setStateSlot target.StateSlot (max current value) state
-        | "TRACKMIN" -> LovenseRuleInternals.setStateSlot target.StateSlot (min current value) state
-        | "CLAMPMIN" -> LovenseRuleInternals.setStateSlot target.StateSlot (max current value) state
-        | "CLAMPMAX" -> LovenseRuleInternals.setStateSlot target.StateSlot (min current value) state
-        | "CLEAR" -> LovenseRuleInternals.setStateSlot target.StateSlot 0.0 state
+        match (rule.Operation |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant() with
+        | "SET" -> LovenseRuleInternals.setStateSlot rule.StateSlot value state
+        | "ADD" -> LovenseRuleInternals.setStateSlot rule.StateSlot (current + value) state
+        | "SUBTRACT" -> LovenseRuleInternals.setStateSlot rule.StateSlot (current - value) state
+        | "MULTIPLY" -> LovenseRuleInternals.setStateSlot rule.StateSlot (current * value) state
+        | "TRACKMAX" -> LovenseRuleInternals.setStateSlot rule.StateSlot (max current value) state
+        | "TRACKMIN" -> LovenseRuleInternals.setStateSlot rule.StateSlot (min current value) state
+        | "CLAMPMIN" -> LovenseRuleInternals.setStateSlot rule.StateSlot (max current value) state
+        | "CLAMPMAX" -> LovenseRuleInternals.setStateSlot rule.StateSlot (min current value) state
+        | "CLEAR" -> LovenseRuleInternals.setStateSlot rule.StateSlot 0.0 state
         | "STARTINCARNATION" ->
             let nextBase = max 0.0 value
             {
@@ -568,44 +576,49 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
                 let variables =
                     inputBuilder.Build state input layers
 
-                let ruleCondition =
-                    (String.IsNullOrWhiteSpace rule.Condition || conditionMatches input variables rule.Condition)
-                    && triggerMatches input variables rule.Trigger
-
-                if not ruleCondition then
+                if not (triggerMatches input variables rule.Trigger) then
                     layers, { state with Variables = variables }, diagnostics
                 else
-                    let targets =
-                        rule.TargetFunctions
-                        |> Option.ofObj
-                        |> Option.defaultValue []
-
-                    targets
-                    |> List.fold (fun (layers, state, diagnostics) target ->
-                        let variables =
-                            inputBuilder.Build state input layers
-
-                        if not (conditionMatches input variables target.Condition) then
+                    match (rule.Layer |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant() with
+                    | "STATE" ->
+                        if not (conditionMatches input variables rule.Condition) then
                             layers, { state with Variables = variables }, diagnostics
                         else
-                            match evaluator.Evaluate target.Expression variables with
+                        match evaluator.Evaluate rule.Expression variables with
+                        | Error message ->
+                            let diagnostic =
+                                {
+                                    RuleName = rule.Name
+                                    Target = ruleTargetName rule
+                                    Message = message
+                                }
+
+                            layers, { state with Variables = variables }, diagnostic :: diagnostics
+                        | Ok value ->
+                            layers, applyStateTarget rule value { state with Variables = variables }, diagnostics
+                    | _ ->
+                        targetFunctions rule
+                        |> List.fold (fun (layers, state, diagnostics) fn ->
+                            let variables =
+                                inputBuilder.Build state input layers
+                                |> targetScopedVariables fn
+
+                            if not (conditionMatches input variables rule.Condition) then
+                                layers, { state with Variables = variables }, diagnostics
+                            else
+                            match evaluator.Evaluate rule.Expression variables with
                             | Error message ->
                                 let diagnostic =
                                     {
                                         RuleName = rule.Name
-                                        Target = targetName target
+                                        Target = LovenseActionCodec.actionName fn
                                         Message = message
                                     }
 
                                 layers, { state with Variables = variables }, diagnostic :: diagnostics
-
                             | Ok value ->
-                                match (target.Layer |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant() with
-                                | "STATE" ->
-                                    layers, applyStateTarget rule target value { state with Variables = variables }, diagnostics
-                                | _ ->
-                                    applyFunctionTarget rule target value layers, { state with Variables = variables }, diagnostics)
-                        (layers, state, diagnostics)
+                                applyFunctionTarget rule fn value layers, { state with Variables = variables }, diagnostics)
+                            (layers, state, diagnostics)
 
             enabled
             |> List.fold folder (Map.empty, state, [])

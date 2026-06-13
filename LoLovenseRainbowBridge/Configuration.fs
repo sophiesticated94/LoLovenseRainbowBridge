@@ -80,17 +80,11 @@ and LovenseRuleConfig =
         Enabled: bool
         Trigger: string
         Condition: string
-        TargetFunctions: LovenseRuleTargetConfig list
-    }
-
-and LovenseRuleTargetConfig =
-    {
-        FunctionName: string
+        TargetFunctions: string
         StateSlot: string
         Layer: string
         Operation: string
         Expression: string
-        Condition: string
         DurationSec: float
     }
 
@@ -267,17 +261,6 @@ module Configuration =
             | true, parsed -> parsed
             | false, _ -> defaultValue
 
-    let private loadRuleTarget (section: IConfigurationSection) =
-        {
-            FunctionName = sectionString section "FunctionName"
-            StateSlot = sectionString section "StateSlot"
-            Layer = sectionString section "Layer"
-            Operation = sectionString section "Operation"
-            Expression = sectionString section "Expression"
-            Condition = sectionString section "Condition"
-            DurationSec = sectionFloat 0.0 section "DurationSec"
-        }
-
     let private loadRule (section: IConfigurationSection) =
         {
             Name = sectionString section "Name"
@@ -285,10 +268,12 @@ module Configuration =
             Enabled = sectionBool true section "Enabled"
             Trigger = sectionString section "Trigger"
             Condition = sectionString section "Condition"
-            TargetFunctions =
-                section.GetSection("TargetFunctions").GetChildren()
-                |> Seq.map loadRuleTarget
-                |> Seq.toList
+            TargetFunctions = sectionString section "TargetFunctions"
+            StateSlot = sectionString section "StateSlot"
+            Layer = sectionString section "Layer"
+            Operation = sectionString section "Operation"
+            Expression = sectionString section "Expression"
+            DurationSec = sectionFloat 0.0 section "DurationSec"
         }
 
     let private validate config =
@@ -411,31 +396,31 @@ module Configuration =
             if not (knownRuleKinds.Contains(rule.Kind.ToUpperInvariant())) then
                 invalidArg "Lovense.Mapping.Rules.Kind" $"Unknown Lovense rule kind: {rule.Kind}"
 
-            let targets =
-                rule.TargetFunctions
-                |> Option.ofObj
-                |> Option.defaultValue []
+            if not (knownRuleOperations.Contains((rule.Operation |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant())) then
+                invalidArg "Lovense.Mapping.Rules.Operation" $"Unknown Lovense rule operation in '{rule.Name}': {rule.Operation}"
 
-            if targets.IsEmpty then
-                invalidArg "Lovense.Mapping.Rules.TargetFunctions" $"Rule '{rule.Name}' must contain at least one target."
+            if not (knownRuleLayers.Contains((rule.Layer |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant())) then
+                invalidArg "Lovense.Mapping.Rules.Layer" $"Unknown Lovense rule layer in '{rule.Name}': {rule.Layer}"
 
-            for target in targets do
-                if not (knownRuleOperations.Contains((target.Operation |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant())) then
-                    invalidArg "Lovense.Mapping.Rules.TargetFunctions.Operation" $"Unknown Lovense rule operation in '{rule.Name}': {target.Operation}"
+            if String.Equals(rule.Layer, "State", StringComparison.OrdinalIgnoreCase) then
+                if String.IsNullOrWhiteSpace rule.StateSlot then
+                    invalidArg "Lovense.Mapping.Rules.StateSlot" $"State rule '{rule.Name}' must declare StateSlot."
+            else
+                let functions =
+                    rule.TargetFunctions.Split('|', StringSplitOptions.RemoveEmptyEntries ||| StringSplitOptions.TrimEntries)
+                    |> Array.toList
 
-                if not (knownRuleLayers.Contains((target.Layer |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant())) then
-                    invalidArg "Lovense.Mapping.Rules.TargetFunctions.Layer" $"Unknown Lovense rule layer in '{rule.Name}': {target.Layer}"
+                if functions.IsEmpty then
+                    invalidArg "Lovense.Mapping.Rules.TargetFunctions" $"Rule '{rule.Name}' must declare TargetFunctions."
 
-                if String.Equals(target.Layer, "State", StringComparison.OrdinalIgnoreCase) then
-                    if String.IsNullOrWhiteSpace target.StateSlot then
-                        invalidArg "Lovense.Mapping.Rules.TargetFunctions.StateSlot" $"State target in '{rule.Name}' must declare StateSlot."
-                elif not (knownLovenseFunctions.Contains((target.FunctionName |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant())) then
-                    invalidArg "Lovense.Mapping.Rules.TargetFunctions.FunctionName" $"Unknown Lovense rule target function in '{rule.Name}': {target.FunctionName}"
+                for functionName in functions do
+                    if not (knownLovenseFunctions.Contains(functionName.ToUpperInvariant())) then
+                        invalidArg "Lovense.Mapping.Rules.TargetFunctions" $"Unknown Lovense rule target function in '{rule.Name}': {functionName}"
 
-                if String.IsNullOrWhiteSpace target.Expression
-                   && not (String.Equals(target.Operation, "Clear", StringComparison.OrdinalIgnoreCase)
-                           || String.Equals(target.Operation, "StartIncarnation", StringComparison.OrdinalIgnoreCase)) then
-                    invalidArg "Lovense.Mapping.Rules.TargetFunctions.Expression" $"Rule target in '{rule.Name}' must declare Expression."
+            if String.IsNullOrWhiteSpace rule.Expression
+               && not (String.Equals(rule.Operation, "Clear", StringComparison.OrdinalIgnoreCase)
+                       || String.Equals(rule.Operation, "StartIncarnation", StringComparison.OrdinalIgnoreCase)) then
+                invalidArg "Lovense.Mapping.Rules.Expression" $"Rule '{rule.Name}' must declare Expression."
 
         if config.Scoring.MinIntensity > config.Scoring.MaxIntensity then
             invalidArg "Scoring.MinIntensity" "Scoring.MinIntensity cannot be greater than Scoring.MaxIntensity."
