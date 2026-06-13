@@ -147,6 +147,9 @@ let snapshot health events : BridgeSnapshot =
         Events = events
     }
 
+let snapshotAt gameTime health events =
+    { snapshot health events with GameTime = gameTime }
+
 let tempPath fileName =
     Path.Combine(Path.GetTempPath(), "LoLovenseRainbowBridge.Tests", Guid.NewGuid().ToString("N"), fileName)
 
@@ -157,6 +160,46 @@ let ``live health multiplier interpolates for arbitrary HP`` () =
     Assert.Equal(0.75, LiveHealthMultiplierCalculator.compute scoringConfig (Some 0.5), 6)
     Assert.Equal(0.875, LiveHealthMultiplierCalculator.compute scoringConfig (Some 0.75), 6)
     Assert.Equal(1.0, LiveHealthMultiplierCalculator.compute scoringConfig (Some 1.0), 6)
+
+[<Fact>]
+let ``heartbeat amplitude follows missing health in zero to six range`` () =
+    Assert.Equal(0.0, TemporaryPulseCalculator.HeartbeatCalculator.amplitude 1.0, 6)
+    Assert.Equal(1.5, TemporaryPulseCalculator.HeartbeatCalculator.amplitude 0.75, 6)
+    Assert.Equal(3.0, TemporaryPulseCalculator.HeartbeatCalculator.amplitude 0.5, 6)
+    Assert.Equal(4.5, TemporaryPulseCalculator.HeartbeatCalculator.amplitude 0.25, 6)
+    Assert.Equal(6.0, TemporaryPulseCalculator.HeartbeatCalculator.amplitude 0.0, 6)
+
+[<Fact>]
+let ``heartbeat pulse shape stays near zero most of cycle and peaks briefly`` () =
+    let quiet = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape 1000.10
+    let rising = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape 1000.75
+    let peak = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape 1000.78
+    let falling = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape 1000.90
+    let ended = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape 1000.99
+
+    Assert.Equal(0.0, quiet, 6)
+    Assert.InRange(rising, 0.01, 0.99)
+    Assert.Equal(1.0, peak, 6)
+    Assert.InRange(falling, 0.01, 0.99)
+    Assert.Equal(0.0, ended, 6)
+    Assert.True(rising > falling)
+
+[<Fact>]
+let ``low health heartbeat adds stronger positive pulse to final intensity`` () =
+    let lowHpPeak = computeIntensityBreakdown scoringConfig (snapshotAt 1000.78 (Some(100.0, 1000.0)) []) initialState
+    let higherHpPeak = computeIntensityBreakdown scoringConfig (snapshotAt 1000.78 (Some(250.0, 1000.0)) []) initialState
+    let lowHpQuiet = computeIntensityBreakdown scoringConfig (snapshotAt 1000.10 (Some(100.0, 1000.0)) []) initialState
+
+    let heartbeatValue breakdown =
+        breakdown.TemporaryEffects
+        |> List.tryFind (fun effect -> effect.Kind = HeartbeatNearDeathEffect)
+        |> Option.map (fun effect -> effect.Value)
+        |> Option.defaultValue 0
+
+    Assert.Equal(5, heartbeatValue lowHpPeak)
+    Assert.Equal(4, heartbeatValue higherHpPeak)
+    Assert.Equal(0, heartbeatValue lowHpQuiet)
+    Assert.True(lowHpPeak.Intensity > lowHpQuiet.Intensity)
 
 [<Fact>]
 let ``death pressure activates on death and reduces base`` () =
