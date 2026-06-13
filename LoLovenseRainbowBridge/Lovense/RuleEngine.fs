@@ -26,7 +26,22 @@ type LovenseCommandBuildInput =
         Position: LovensePlanningPosition option
         Now: DateTimeOffset
         LoopIteration: int64
+        LastSentFunctionState: Map<string, int>
+        RuntimeContext: LovenseRuntimeRuleContext
         RuntimePollMs: int
+    }
+
+and LovenseRuntimeRuleContext =
+    {
+        LolDataAcquired: bool
+        OcrDataAcquired: bool
+        LovenseDataAcquired: bool
+        LolUnavailableElapsedMs: int64
+        OcrUnavailableElapsedMs: int64
+        LovenseUnavailableElapsedMs: int64
+        LolFailureAttemptsSinceSuccess: int
+        OcrFailureAttemptsSinceSuccess: int
+        LovenseFailureAttemptsSinceSuccess: int
     }
 
 type LovenseFunctionLayers =
@@ -79,7 +94,11 @@ type LovenseRuleEvaluationTrace =
 type LovenseCommandValueFrame =
     {
         Plan: LovenseCommandPlan
+        ChangedPlan: LovenseCommandPlan option
         ActionString: string
+        ChangedActionString: string option
+        FullFunctionState: Map<string, int>
+        ChangedFunctionState: (string * int) list
         FunctionStates: Map<LovenseActionFunction, LovenseFunctionLayers>
         StateDiff: (string * int) list
         BuilderState: LovenseCommandBuilderState
@@ -412,8 +431,11 @@ type RuleInputBuilder(scoringConfig: ScoringConfig) =
             let heartbeatAmplitude = missingHealth * scoringConfig.HeartbeatPulseMaxAmplitude
             let safePollMs = max 1 input.RuntimePollMs
             let iterationsPerSecond = max 1.0 (Math.Round(1000.0 / float safePollMs))
-            let loopIteration = float input.LoopIteration
-            let loopIterationWithinSecond = float (input.LoopIteration % int64 iterationsPerSecond)
+            let loopIteration =
+                state.Variables
+                |> Map.tryFind "LovenseIteration"
+                |> Option.defaultValue (float input.LoopIteration)
+            let loopIterationWithinSecond = float ((int64 loopIteration) % int64 iterationsPerSecond)
             let loopTimeSec = loopIteration * float safePollMs / 1000.0
 
             Map.empty
@@ -460,7 +482,17 @@ type RuleInputBuilder(scoringConfig: ScoringConfig) =
             |> add "LoopIterationWithinSecond" loopIterationWithinSecond
             |> add "LoopIterationsPerSecond" iterationsPerSecond
             |> add "LoopTimeSec" loopTimeSec
+            |> add "LovenseIteration" loopIteration
             |> add "RuntimePollMs" (float safePollMs)
+            |> add "LolDataAcquired" (boolValue input.RuntimeContext.LolDataAcquired)
+            |> add "OcrDataAcquired" (boolValue input.RuntimeContext.OcrDataAcquired)
+            |> add "LovenseDataAcquired" (boolValue input.RuntimeContext.LovenseDataAcquired)
+            |> add "LolUnavailableElapsedMs" (float input.RuntimeContext.LolUnavailableElapsedMs)
+            |> add "OcrUnavailableElapsedMs" (float input.RuntimeContext.OcrUnavailableElapsedMs)
+            |> add "LovenseUnavailableElapsedMs" (float input.RuntimeContext.LovenseUnavailableElapsedMs)
+            |> add "LolFailureAttemptsSinceSuccess" (float input.RuntimeContext.LolFailureAttemptsSinceSuccess)
+            |> add "OcrFailureAttemptsSinceSuccess" (float input.RuntimeContext.OcrFailureAttemptsSinceSuccess)
+            |> add "LovenseFailureAttemptsSinceSuccess" (float input.RuntimeContext.LovenseFailureAttemptsSinceSuccess)
             |> add "Pi" Math.PI
             |> add "CurrentBase" state.CurrentBase
             |> add "MaxBaseThisIncarnation" state.MaxBaseThisIncarnation
@@ -479,7 +511,7 @@ type RuleInputBuilder(scoringConfig: ScoringConfig) =
             |> fun variables ->
                 LovenseActionCodec.emptyState
                 |> Map.fold (fun acc name value ->
-                    let previous = state.LastFunctionState |> Map.tryFind name |> Option.defaultValue value
+                    let previous = input.LastSentFunctionState |> Map.tryFind name |> Option.defaultValue value
                     acc |> Map.add $"PreviousFunction_{name}" (float previous)) variables
 
 type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExpressionEvaluator) =
@@ -694,6 +726,8 @@ type LovenseCommandValueBuilder(config: LovenseConfig, interpreter: ILovenseRule
             LastActionString = None
         }
 
+    let mutable lovenseIteration = 0L
+
     let profileFor fn =
         let name = LovenseActionCodec.actionName fn
         config.Mapping.FunctionProfiles
@@ -799,8 +833,17 @@ type LovenseCommandValueBuilder(config: LovenseConfig, interpreter: ILovenseRule
 
     interface ILovenseCommandValueBuilder with
         member _.Build input =
+            lovenseIteration <- lovenseIteration + 1L
+            let stateBeforeBuild =
+                {
+                    state with
+                        Variables =
+                            state.Variables
+                            |> Map.add "LovenseIteration" (float lovenseIteration)
+                            |> Map.add "LoopIteration" (float lovenseIteration)
+                }
             let (layers, nextState, diagnostics: LovenseRuleDiagnostic list, traces: LovenseRuleEvaluationTrace list) =
-                interpreter.Apply state input config.Mapping.Rules
+                interpreter.Apply stateBeforeBuild input config.Mapping.Rules
             let functionStates = materializeLayers layers
 
             let actions =
@@ -825,7 +868,16 @@ type LovenseCommandValueBuilder(config: LovenseConfig, interpreter: ILovenseRule
 
             let actionString = LovenseActionCodec.planActionString plan
             let currentFlatState = LovenseActionCodec.stateFromActions plan.Actions
-            let diff = LovenseActionCodec.diff state.LastFunctionState currentFlatState
+            let diff = LovenseActionCodec.diff input.LastSentFunctionState currentFlatState
+            let changedPlan =
+                LovenseActionCodec.planFromStateDiff
+                    config
+                    (reasonsFromLayers functionStates diagnostics)
+                    config.CommandTimeSec
+                    config.Mapping.DefaultStopPrevious
+                    config.ToyId
+                    diff
+            let changedActionString = changedPlan |> Option.map LovenseActionCodec.planActionString
             let vibrateBase =
                 functionStates
                 |> Map.tryFind Vibrate
@@ -841,13 +893,17 @@ type LovenseCommandValueBuilder(config: LovenseConfig, interpreter: ILovenseRule
                     nextState with
                         CurrentBase = vibrateBase
                         Variables = variables
-                        LastFunctionState = currentFlatState
+                        LastFunctionState = input.LastSentFunctionState
                         LastActionString = Some actionString
                 }
 
             {
                 Plan = plan
+                ChangedPlan = changedPlan
                 ActionString = actionString
+                ChangedActionString = changedActionString
+                FullFunctionState = currentFlatState
+                ChangedFunctionState = diff
                 FunctionStates = functionStates
                 StateDiff = diff
                 BuilderState = state

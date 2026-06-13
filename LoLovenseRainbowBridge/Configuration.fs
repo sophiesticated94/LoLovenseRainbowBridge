@@ -107,6 +107,9 @@ and LovenseRuleConfig =
 type RuntimeConfig =
     {
         PollMs: int
+        LeaguePollMs: int
+        OcrPollMs: int
+        LovensePollMs: int
         ResendEveryMs: int
         UnavailableRetryMs: int
     }
@@ -295,6 +298,15 @@ module Configuration =
     let private validate config =
         if config.Runtime.PollMs <= 0 then
             invalidArg "Runtime.PollMs" "Runtime.PollMs must be greater than zero."
+
+        if config.Runtime.LeaguePollMs <= 0 then
+            invalidArg "Runtime.LeaguePollMs" "Runtime.LeaguePollMs must be greater than zero."
+
+        if config.Runtime.OcrPollMs <= 0 then
+            invalidArg "Runtime.OcrPollMs" "Runtime.OcrPollMs must be greater than zero."
+
+        if config.Runtime.LovensePollMs <= 0 then
+            invalidArg "Runtime.LovensePollMs" "Runtime.LovensePollMs must be greater than zero."
 
         if config.Runtime.ResendEveryMs <= 0 then
             invalidArg "Runtime.ResendEveryMs" "Runtime.ResendEveryMs must be greater than zero."
@@ -658,6 +670,9 @@ module Configuration =
             Runtime =
                 {
                     PollMs = intValue root "Runtime:PollMs"
+                    LeaguePollMs = optionalString root "Runtime:LeaguePollMs" |> Option.bind (fun raw -> match Int32.TryParse raw with | true, value -> Some value | _ -> None) |> Option.defaultValue (intValue root "Runtime:PollMs")
+                    OcrPollMs = optionalString root "Runtime:OcrPollMs" |> Option.bind (fun raw -> match Int32.TryParse raw with | true, value -> Some value | _ -> None) |> Option.defaultValue (intValue root "Runtime:PollMs")
+                    LovensePollMs = optionalString root "Runtime:LovensePollMs" |> Option.bind (fun raw -> match Int32.TryParse raw with | true, value -> Some value | _ -> None) |> Option.defaultValue (intValue root "Runtime:PollMs")
                     ResendEveryMs = intValue root "Runtime:ResendEveryMs"
                     UnavailableRetryMs = intValue root "Runtime:UnavailableRetryMs"
                 }

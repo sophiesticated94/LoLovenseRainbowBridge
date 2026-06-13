@@ -31,7 +31,7 @@ Lovense/LocalApi.fs               Local API GetToys and local command transport
 Lovense/SocketRuntime.fs          Socket.IO connection and listeners
 Lovense/Client.fs                 Lovense facade and transport selection
 Recording/Recording.fs            SQLite gameplay recording and replay
-App/Runtime.fs                    orchestration loop
+App/Runtime.fs                    League/OCR/Lovense runtime jobs
 ScreenCapture/ScreenCapture.fs    Windows screen-region capture
 MinimapDetector/MinimapDetector.fs OpenCV minimap player marker detection
 PositionMapping/PositionMapping.fs minimap position to quadrant/zone context
@@ -524,7 +524,7 @@ The legacy `POSITION_ROTATION_ENABLE` override is still accepted for the enable 
 3. If no template is configured or matching fails, OpenCV uses HSV color thresholding, morphology, and contour scoring
 4. The detected position is converted into normalized coordinates, quadrant, zone, confidence, and detection method
 5. The command builder evaluates `PositionModulation` rules, usually changing `Vibrate1` / `Vibrate2`
-6. Detection failures are logged but do not interrupt the main runtime loop
+6. Detection failures are logged but do not interrupt the League or Lovense jobs
 
 ### Notes
 

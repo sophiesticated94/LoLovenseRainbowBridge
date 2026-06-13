@@ -2,6 +2,7 @@ namespace LoLovenseRainbowBridge
 
 open System
 open System.Threading
+open System.Threading.Tasks
 open System.Globalization
 open Microsoft.Extensions.DependencyInjection
 open LoLovenseRainbowBridge.App
@@ -155,6 +156,7 @@ module Program =
             use leagueClient = new LeagueLiveClient(config.League.BaseUrl, logger)
             use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger)
             lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult()
+            let runtimeCache = Runtime.RuntimeStateCache()
             use serviceProvider =
                 ServiceCollection()
                     .AddSingleton<IRuleExpressionEvaluator, RuleExpressionEvaluator>()
@@ -165,10 +167,17 @@ module Program =
                     .BuildServiceProvider()
 
             let commandBuilder = serviceProvider.GetRequiredService<ILovenseCommandValueBuilder>()
+            let jobs : Runtime.IAppJob list =
+                [
+                    Runtime.LeagueCacheJob(config.Runtime, config.Scoring, leagueClient, runtimeCache, logger) :> Runtime.IAppJob
+                    Runtime.OcrCacheJob(config.Runtime, config.PositionBasedRotation, runtimeCache, logger) :> Runtime.IAppJob
+                    Runtime.LovenseRuleJob(config.Runtime, config.Scoring, config.Lovense, lovenseClient, commandBuilder, runtimeCache, logger, recorder, (configSummary config)) :> Runtime.IAppJob
+                ]
 
-            printfn "LoL → Lovense intensity generator started."
+            printfn "LoL → Lovense job runtime started."
             printfn "LoL target: %s/liveclientdata/allgamedata" config.League.BaseUrl
             printfn "Lovense Socket API target: %s" lovenseClient.CommandUrl
+            printfn "Jobs: %s" (jobs |> List.map (fun job -> job.Name) |> String.concat ", ")
             printfn "Dry run: %b" config.Lovense.DryRun
             printfn "Log directory: %s" logger.SessionDirectory
             printfn "Track log: %s" logger.TrackPath
@@ -180,22 +189,9 @@ module Program =
             printfn "Press Ctrl+C to stop."
 
             try
-                Runtime.loop
-                    config.Runtime
-                    config.Scoring
-                    config.Lovense
-                    config.PositionBasedRotation
-                    leagueClient
-                    lovenseClient
-                    commandBuilder
-                    logger
-                    recorder
-                    (configSummary config)
-                    initialState
-                    Runtime.initialFailureState
-                    Runtime.initialPositionRotationState
-                    0L
-                    cts.Token
+                jobs
+                |> List.map (fun job -> job.RunAsync cts.Token)
+                |> Task.WhenAll
                 |> fun task -> task.GetAwaiter().GetResult()
 
                 0

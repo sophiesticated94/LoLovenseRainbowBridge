@@ -253,6 +253,19 @@ let emptyBuilderState =
         LastActionString = None
     }
 
+let defaultRuntimeRuleContext =
+    {
+        LolDataAcquired = true
+        OcrDataAcquired = true
+        LovenseDataAcquired = true
+        LolUnavailableElapsedMs = 0L
+        OcrUnavailableElapsedMs = 0L
+        LovenseUnavailableElapsedMs = 0L
+        LolFailureAttemptsSinceSuccess = 0
+        OcrFailureAttemptsSinceSuccess = 0
+        LovenseFailureAttemptsSinceSuccess = 0
+    }
+
 let testAssetPath fileName =
     let outputPath = Path.Combine(AppContext.BaseDirectory, "TestAssets", fileName)
 
@@ -897,6 +910,8 @@ let ``rule input builder exposes live health and heartbeat variables`` () =
             Position = None
             Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
             LoopIteration = 1L
+            LastSentFunctionState = LovenseActionCodec.emptyState
+            RuntimeContext = defaultRuntimeRuleContext
             RuntimePollMs = 250
         }
 
@@ -959,6 +974,8 @@ let ``rule command builder applies heartbeat as effect without mutating base`` (
                 Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
+                LastSentFunctionState = LovenseActionCodec.emptyState
+                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -995,6 +1012,8 @@ let ``rule condition skips target evaluation and state mutation`` () =
                 Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
+                LastSentFunctionState = LovenseActionCodec.emptyState
+                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1033,6 +1052,8 @@ let ``rule value aggregation allows negative contributions and clamps final sum`
                 Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
+                LastSentFunctionState = LovenseActionCodec.emptyState
+                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1068,6 +1089,8 @@ let ``conditional heartbeat can use function range variables for asymmetric ster
                 Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
+                LastSentFunctionState = LovenseActionCodec.emptyState
+                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1105,6 +1128,8 @@ let ``pipe separated target functions use target scoped max value`` () =
                 Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
+                LastSentFunctionState = LovenseActionCodec.emptyState
+                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1142,6 +1167,8 @@ let ``function rule condition can use target scoped max value`` () =
                 Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
+                LastSentFunctionState = LovenseActionCodec.emptyState
+                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1177,6 +1204,8 @@ let ``rule trace records expression and evaluated value separately`` () =
                 Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
+                LastSentFunctionState = LovenseActionCodec.emptyState
+                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1214,6 +1243,8 @@ let ``function max remains available for explicit cross function expressions`` (
                 Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
+                LastSentFunctionState = LovenseActionCodec.emptyState
+                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1241,6 +1272,8 @@ let ``multikill expression grows by odd deltas`` () =
                 Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
+                LastSentFunctionState = LovenseActionCodec.emptyState
+                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 500
             }
 
@@ -1550,6 +1583,8 @@ let ``rule command builder tracks max base and clamps to incarnation floor`` () 
                 Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
+                LastSentFunctionState = LovenseActionCodec.emptyState
+                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 500
             }
 
@@ -1584,6 +1619,8 @@ let ``rule command builder applies minimap stereo position modulation`` () =
                         }
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
+                LastSentFunctionState = LovenseActionCodec.emptyState
+                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 500
             }
 
@@ -1637,6 +1674,131 @@ let ``lovense state diff includes only changed functions`` () =
     Assert.False(diff.ContainsKey("Vibrate"))
     Assert.Equal(9, diff["Rotate"])
     Assert.Equal(4, diff["All"])
+
+[<Fact>]
+let ``rule input builder exposes runtime availability variables`` () =
+    let input =
+        {
+            PreviousState = initialState
+            Snapshot = snapshot (Some(1000.0, 1000.0)) []
+            EvolvedState = initialState
+            Position = None
+            Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+            LoopIteration = 1L
+            LastSentFunctionState = LovenseActionCodec.emptyState
+            RuntimeContext =
+                {
+                    defaultRuntimeRuleContext with
+                        LolDataAcquired = false
+                        OcrDataAcquired = false
+                        LovenseDataAcquired = false
+                        LolUnavailableElapsedMs = 12345L
+                        OcrUnavailableElapsedMs = 23456L
+                        LovenseUnavailableElapsedMs = 34567L
+                        LolFailureAttemptsSinceSuccess = 3
+                        OcrFailureAttemptsSinceSuccess = 4
+                        LovenseFailureAttemptsSinceSuccess = 5
+                }
+            RuntimePollMs = 100
+        }
+
+    let variables = (RuleInputBuilder(scoringConfig) :> IRuleInputBuilder).Build emptyBuilderState input Map.empty
+
+    Assert.Equal(0.0, variables["LolDataAcquired"])
+    Assert.Equal(0.0, variables["OcrDataAcquired"])
+    Assert.Equal(0.0, variables["LovenseDataAcquired"])
+    Assert.Equal(12345.0, variables["LolUnavailableElapsedMs"])
+    Assert.Equal(3.0, variables["LolFailureAttemptsSinceSuccess"])
+
+[<Fact>]
+let ``lovense command builder creates changed plan only for function diffs`` () =
+    let config =
+        {
+            ruleEngineLovenseConfig with
+                Mapping =
+                    {
+                        ruleEngineLovenseConfig.Mapping with
+                            FunctionProfiles = [ functionProfile "Vibrate" true; functionProfile "Rotate" true ]
+                            Rules =
+                                [
+                                    functionRule "vibrate-set" "BaseModifier" "" "" "Vibrate" "Base" "Set" "10"
+                                    functionRule "rotate-set" "BaseModifier" "" "" "Rotate" "Base" "Set" "4"
+                                ]
+                    }
+        }
+
+    let builder = LovenseCommandValueBuilder(config, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let baseInput =
+        {
+            PreviousState = initialState
+            Snapshot = snapshot (Some(1000.0, 1000.0)) []
+            EvolvedState = initialState
+            Position = None
+            Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+            LoopIteration = 1L
+            LastSentFunctionState = LovenseActionCodec.emptyState
+            RuntimeContext = defaultRuntimeRuleContext
+            RuntimePollMs = 100
+        }
+
+    let firstFrame = builder.Build baseInput
+    Assert.Equal(Some "Vibrate:10,Rotate:4", firstFrame.ChangedActionString)
+
+    let secondFrame =
+        builder.Build
+            {
+                baseInput with
+                    LastSentFunctionState = firstFrame.FullFunctionState
+            }
+
+    Assert.True(secondFrame.ChangedPlan.IsNone)
+    Assert.Empty(secondFrame.ChangedFunctionState)
+
+[<Fact>]
+let ``lol unavailable pulse is expressed as configurable rule`` () =
+    let config =
+        {
+            ruleEngineLovenseConfig with
+                Mapping =
+                    {
+                        ruleEngineLovenseConfig.Mapping with
+                            FunctionProfiles = [ functionProfile "Vibrate" true ]
+                            Rules =
+                                [
+                                    functionRule
+                                        "lol-unavailable-pulse"
+                                        "Effect"
+                                        ""
+                                        "LolDataAcquired == 0"
+                                        "Vibrate"
+                                        "Effect"
+                                        "Set"
+                                        "10 + Ceiling(Sin(LolUnavailableElapsedMs / 10000.0)) * 5"
+                                ]
+                    }
+        }
+
+    let builder = LovenseCommandValueBuilder(config, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let frame =
+        builder.Build
+            {
+                PreviousState = initialState
+                Snapshot = snapshot (Some(1000.0, 1000.0)) []
+                EvolvedState = initialState
+                Position = None
+                Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+                LoopIteration = 1L
+                LastSentFunctionState = LovenseActionCodec.emptyState
+                RuntimeContext =
+                    {
+                        defaultRuntimeRuleContext with
+                            LolDataAcquired = false
+                            LolUnavailableElapsedMs = 20000L
+                    }
+                RuntimePollMs = 100
+            }
+
+    Assert.Equal("Vibrate:15", frame.ActionString)
 
 [<Fact>]
 let ``sqlite recorder opens closes and skips unchanged slices`` () =
@@ -1718,3 +1880,4 @@ let ``minimap detection works without generated default template`` () =
     Assert.InRange(position.NormalizedX, 0.0, 1.0)
     Assert.InRange(position.NormalizedY, 0.0, 1.0)
     Assert.True(position.Confidence > 0.1, sprintf "Color detector confidence too low: %f" position.Confidence)
+

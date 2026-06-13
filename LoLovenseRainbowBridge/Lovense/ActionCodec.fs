@@ -196,6 +196,31 @@ module LovenseActionCodec =
                 ToyId = config.ToyId
             }
 
+    let planFromStateDiff (config: LovenseConfig) reasons timeSec stopPrevious toyId changes =
+        let actions =
+            changes
+            |> List.choose (fun (name, value) ->
+                functionFromName name
+                |> Option.map (fun fn ->
+                    {
+                        Function = fn
+                        Value = LovenseFunctionRanges.clamp fn value
+                        MaxValue = LovenseFunctionRanges.maxValue fn
+                        RangeStart = None
+                    }))
+
+        match actions with
+        | [] -> None
+        | actions ->
+            Some
+                {
+                    Actions = actions
+                    Reasons = reasons
+                    TimeSec = timeSec
+                    StopPrevious = stopPrevious
+                    ToyId = toyId
+                }
+
     let diff previous current =
         canonicalFunctions
         |> List.choose (fun name ->

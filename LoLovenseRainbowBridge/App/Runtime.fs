@@ -15,34 +15,50 @@ open LoLovenseRainbowBridge.PositionMapping
 
 module Runtime =
 
-    type ConnectionFailureState =
-        {
-            LeagueFailureAttemptsSinceSuccess: int
-            LovenseFailureAttemptsSinceSuccess: int
-            LastLeagueError: string option
-            LastLovenseError: string option
-            LastSuccessfulLeagueAt: DateTimeOffset option
-            LastSuccessfulLovenseAt: DateTimeOffset option
-            LeagueUnavailableSince: DateTimeOffset option
-            RunAt: DateTimeOffset
-        }
-
     type PositionRotationState =
         {
             LastCaptureTime: DateTimeOffset option
             DetectionFailures: int
         }
 
-    let initialFailureState =
+    type LeagueCacheState =
         {
-            LeagueFailureAttemptsSinceSuccess = 0
-            LovenseFailureAttemptsSinceSuccess = 0
-            LastLeagueError = None
-            LastLovenseError = None
-            LastSuccessfulLeagueAt = None
-            LastSuccessfulLovenseAt = None
-            LeagueUnavailableSince = None
-            RunAt = DateTimeOffset.UtcNow
+            Snapshot: BridgeSnapshot option
+            DataAcquired: bool
+            FailureAttemptsSinceSuccess: int
+            LastSuccessfulAt: DateTimeOffset option
+            UnavailableSince: DateTimeOffset option
+            LastError: string option
+            Version: int64
+        }
+
+    type OcrCacheState =
+        {
+            Position: LovensePlanningPosition option
+            DataAcquired: bool
+            DetectionFailures: int
+            LastSuccessfulAt: DateTimeOffset option
+            UnavailableSince: DateTimeOffset option
+            LastError: string option
+            Version: int64
+        }
+
+    type LovenseCacheState =
+        {
+            DataAcquired: bool
+            Connected: bool
+            FailureAttemptsSinceSuccess: int
+            LastSuccessfulAt: DateTimeOffset option
+            UnavailableSince: DateTimeOffset option
+            LastError: string option
+            Version: int64
+        }
+
+    type RuntimeCacheSnapshot =
+        {
+            League: LeagueCacheState
+            Ocr: OcrCacheState
+            Lovense: LovenseCacheState
         }
 
     let initialPositionRotationState =
@@ -50,6 +66,164 @@ module Runtime =
             LastCaptureTime = None
             DetectionFailures = 0
         }
+
+    let private initialLeague =
+        {
+            Snapshot = None
+            DataAcquired = false
+            FailureAttemptsSinceSuccess = 0
+            LastSuccessfulAt = None
+            UnavailableSince = Some DateTimeOffset.UtcNow
+            LastError = None
+            Version = 0L
+        }
+
+    let private initialOcr =
+        {
+            Position = None
+            DataAcquired = false
+            DetectionFailures = 0
+            LastSuccessfulAt = None
+            UnavailableSince = Some DateTimeOffset.UtcNow
+            LastError = None
+            Version = 0L
+        }
+
+    let private initialLovense =
+        {
+            DataAcquired = false
+            Connected = false
+            FailureAttemptsSinceSuccess = 0
+            LastSuccessfulAt = None
+            UnavailableSince = Some DateTimeOffset.UtcNow
+            LastError = None
+            Version = 0L
+        }
+
+    type RuntimeStateCache() =
+        let gate = obj()
+        let mutable snapshot =
+            {
+                League = initialLeague
+                Ocr = initialOcr
+                Lovense = initialLovense
+            }
+
+        member _.Read() =
+            lock gate (fun () -> snapshot)
+
+        member _.UpdateLeagueSuccess leagueSnapshot =
+            lock gate (fun () ->
+                let now = DateTimeOffset.UtcNow
+                snapshot <-
+                    {
+                        snapshot with
+                            League =
+                                {
+                                    snapshot.League with
+                                        Snapshot = Some leagueSnapshot
+                                        DataAcquired = true
+                                        FailureAttemptsSinceSuccess = 0
+                                        LastSuccessfulAt = Some now
+                                        UnavailableSince = None
+                                        LastError = None
+                                        Version = snapshot.League.Version + 1L
+                                }
+                    })
+
+        member _.UpdateLeagueFailure error =
+            lock gate (fun () ->
+                let now = DateTimeOffset.UtcNow
+                snapshot <-
+                    {
+                        snapshot with
+                            League =
+                                {
+                                    snapshot.League with
+                                        DataAcquired = false
+                                        FailureAttemptsSinceSuccess = snapshot.League.FailureAttemptsSinceSuccess + 1
+                                        UnavailableSince = snapshot.League.UnavailableSince |> Option.orElse (Some now)
+                                        LastError = Some error
+                                        Version = snapshot.League.Version + 1L
+                                }
+                    })
+
+        member _.UpdateOcrSuccess position =
+            lock gate (fun () ->
+                let now = DateTimeOffset.UtcNow
+                snapshot <-
+                    {
+                        snapshot with
+                            Ocr =
+                                {
+                                    snapshot.Ocr with
+                                        Position = Some position
+                                        DataAcquired = true
+                                        DetectionFailures = 0
+                                        LastSuccessfulAt = Some now
+                                        UnavailableSince = None
+                                        LastError = None
+                                        Version = snapshot.Ocr.Version + 1L
+                                }
+                    })
+
+        member _.UpdateOcrFailure error =
+            lock gate (fun () ->
+                let now = DateTimeOffset.UtcNow
+                snapshot <-
+                    {
+                        snapshot with
+                            Ocr =
+                                {
+                                    snapshot.Ocr with
+                                        DataAcquired = false
+                                        DetectionFailures = snapshot.Ocr.DetectionFailures + 1
+                                        UnavailableSince = snapshot.Ocr.UnavailableSince |> Option.orElse (Some now)
+                                        LastError = Some error
+                                        Version = snapshot.Ocr.Version + 1L
+                                }
+                    })
+
+        member _.UpdateLovenseSuccess connected =
+            lock gate (fun () ->
+                let now = DateTimeOffset.UtcNow
+                snapshot <-
+                    {
+                        snapshot with
+                            Lovense =
+                                {
+                                    snapshot.Lovense with
+                                        DataAcquired = true
+                                        Connected = connected
+                                        FailureAttemptsSinceSuccess = 0
+                                        LastSuccessfulAt = Some now
+                                        UnavailableSince = None
+                                        LastError = None
+                                        Version = snapshot.Lovense.Version + 1L
+                                }
+                    })
+
+        member _.UpdateLovenseFailure error =
+            lock gate (fun () ->
+                let now = DateTimeOffset.UtcNow
+                snapshot <-
+                    {
+                        snapshot with
+                            Lovense =
+                                {
+                                    snapshot.Lovense with
+                                        DataAcquired = false
+                                        Connected = false
+                                        FailureAttemptsSinceSuccess = snapshot.Lovense.FailureAttemptsSinceSuccess + 1
+                                        UnavailableSince = snapshot.Lovense.UnavailableSince |> Option.orElse (Some now)
+                                        LastError = Some error
+                                        Version = snapshot.Lovense.Version + 1L
+                                }
+                    })
+
+    type IAppJob =
+        abstract Name: string
+        abstract RunAsync: CancellationToken -> Task
 
     let private planningQuadrant normalizedX normalizedY =
         if normalizedX >= 0.42 && normalizedX <= 0.58 && normalizedY >= 0.42 && normalizedY <= 0.58 then "Center"
@@ -60,52 +234,13 @@ module Runtime =
         elif normalizedX < 0.5 then "Left"
         else "Right"
 
-    let private recordLeagueFailure error failureState =
-        let now = DateTimeOffset.UtcNow
-
-        {
-            failureState with
-                LeagueFailureAttemptsSinceSuccess = failureState.LeagueFailureAttemptsSinceSuccess + 1
-                LastLeagueError = Some error
-                LeagueUnavailableSince = failureState.LeagueUnavailableSince |> Option.orElse (Some now)
-        }
-
-    let private recordLeagueSuccess now failureState =
-        {
-            failureState with
-                LeagueFailureAttemptsSinceSuccess = 0
-                LastLeagueError = None
-                LastSuccessfulLeagueAt = Some now
-                LeagueUnavailableSince = None
-        }
-
-    let private recordLovenseFailure error failureState =
-        {
-            failureState with
-                LovenseFailureAttemptsSinceSuccess = failureState.LovenseFailureAttemptsSinceSuccess + 1
-                LastLovenseError = Some error
-        }
-
-    let private recordLovenseSuccess now failureState =
-        {
-            failureState with
-                LovenseFailureAttemptsSinceSuccess = 0
-                LastLovenseError = None
-                LastSuccessfulLovenseAt = Some now
-        }
-
     let private leagueErrorSummary error : obj =
         match error with
-        | LeagueFetchError.ConnectionFailed(url, message) ->
-            box {| kind = "ConnectionFailed"; url = url; message = message |}
-        | LeagueFetchError.HttpFailure(url, statusCode, body) ->
-            box {| kind = "HttpFailure"; url = url; statusCode = statusCode; bodyLength = body.Length |}
-        | LeagueFetchError.InvalidJson(url, message, rawText) ->
-            box {| kind = "InvalidJson"; url = url; message = message; rawLength = rawText.Length |}
-        | LeagueFetchError.EmptyJson(url, rawText) ->
-            box {| kind = "EmptyJson"; url = url; rawLength = rawText.Length |}
-        | LeagueFetchError.UnexpectedFetchError(url, message, errorType) ->
-            box {| kind = "UnexpectedFetchError"; url = url; message = message; errorType = errorType |}
+        | LeagueFetchError.ConnectionFailed(url, message) -> box {| kind = "ConnectionFailed"; url = url; message = message |}
+        | LeagueFetchError.HttpFailure(url, statusCode, body) -> box {| kind = "HttpFailure"; url = url; statusCode = statusCode; bodyLength = body.Length |}
+        | LeagueFetchError.InvalidJson(url, message, rawText) -> box {| kind = "InvalidJson"; url = url; message = message; rawLength = rawText.Length |}
+        | LeagueFetchError.EmptyJson(url, rawText) -> box {| kind = "EmptyJson"; url = url; rawLength = rawText.Length |}
+        | LeagueFetchError.UnexpectedFetchError(url, message, errorType) -> box {| kind = "UnexpectedFetchError"; url = url; message = message; errorType = errorType |}
 
     let private leagueErrorMessage error =
         match error with
@@ -115,19 +250,6 @@ module Runtime =
         | LeagueFetchError.EmptyJson _ -> "Empty JSON"
         | LeagueFetchError.UnexpectedFetchError(_, message, _) -> message
 
-    let private lovenseErrorSummary error : obj =
-        match error with
-        | LovenseCommandError.NotConnected connectionError ->
-            box {| kind = "NotConnected"; connectionError = string connectionError |}
-        | LovenseCommandError.CommandEmitFailed(eventName, message) ->
-            box {| kind = "CommandEmitFailed"; eventName = eventName; message = message |}
-        | LovenseCommandError.CommandRejected(eventName, message) ->
-            box {| kind = "CommandRejected"; eventName = eventName; message = message |}
-        | LovenseCommandError.CommandTimeout(eventName, timeoutMs) ->
-            box {| kind = "CommandTimeout"; eventName = eventName; timeoutMs = timeoutMs |}
-        | LovenseCommandError.UnexpectedCommandError(eventName, message, errorType) ->
-            box {| kind = "UnexpectedCommandError"; eventName = eventName; message = message; errorType = errorType |}
-
     let private lovenseErrorMessage error =
         match error with
         | LovenseCommandError.NotConnected connectionError -> $"Not connected: {connectionError}"
@@ -136,534 +258,356 @@ module Runtime =
         | LovenseCommandError.CommandTimeout(_, timeoutMs) -> $"Command timed out after {timeoutMs}ms"
         | LovenseCommandError.UnexpectedCommandError(_, message, _) -> message
 
-    let private printStatus (snapshot: BridgeSnapshot) (state: GeneratorState) (breakdown: IntensityBreakdown) =
-        printfn
-            "t=%6.1fs | K/D/A=%i/%i/%i | norm=%.2f | multikills=%i | temp=%i | output=%i"
-            snapshot.GameTime
-            snapshot.ActivePlayer.Kills
-            snapshot.ActivePlayer.Deaths
-            snapshot.ActivePlayer.Assists
-            breakdown.NormalizedScore
-            state.MultikillCount
-            breakdown.TemporaryBoost
-            breakdown.Intensity
+    let private lovenseErrorSummary error : obj =
+        match error with
+        | LovenseCommandError.NotConnected connectionError -> box {| kind = "NotConnected"; connectionError = string connectionError |}
+        | LovenseCommandError.CommandEmitFailed(eventName, message) -> box {| kind = "CommandEmitFailed"; eventName = eventName; message = message |}
+        | LovenseCommandError.CommandRejected(eventName, message) -> box {| kind = "CommandRejected"; eventName = eventName; message = message |}
+        | LovenseCommandError.CommandTimeout(eventName, timeoutMs) -> box {| kind = "CommandTimeout"; eventName = eventName; timeoutMs = timeoutMs |}
+        | LovenseCommandError.UnexpectedCommandError(eventName, message, errorType) -> box {| kind = "UnexpectedCommandError"; eventName = eventName; message = message; errorType = errorType |}
 
-    let private handleUnavailable
-        (runtimeConfig: RuntimeConfig)
-        (lovenseConfig: LovenseConfig)
-        (lovenseClient: LovenseClient)
-        (logger: StructuredSessionLogger)
-        (recorder: GameplayRecorder option)
-        (state: GeneratorState)
-        (failureState: ConnectionFailureState)
-        (ct: CancellationToken)
-        =
-        task {
-            recorder |> Option.iter (fun recorder -> recorder.CloseActiveGame(DateTimeOffset.UtcNow))
-
-            let now = DateTimeOffset.UtcNow
-            let stopPlan = Mapping.stopPlan lovenseConfig StopCommand
-            let stopAction = LovenseActionCodec.planActionString stopPlan
-            let shouldSendStop = shouldSendCommand runtimeConfig.ResendEveryMs now stopAction state
-
-            logger.Info(
-                "runtime.unavailable.stop_decision",
-                "Decided whether to send Lovense stop command while data is unavailable.",
-                {|
-                    shouldSend = shouldSendStop
-                    now = now
-                    previousLastSent = state.LastSent
-                    previousLastSentCommand = state.LastSentCommand
-                    commandAction = stopAction
-                |}
-            )
-
-            if shouldSendStop then
-                let! result = lovenseClient.SendCommandPlanAsync(stopPlan, 0, [], ct)
-
-                match result with
-                | Ok _ ->
-                    let nextFailureState = recordLovenseSuccess now failureState
-                    return { state with LastSent = Some(0, now); LastSentCommand = Some(stopAction, now) }, nextFailureState
-
-                | Error error ->
-                    let nextFailureState = recordLovenseFailure (lovenseErrorMessage error) failureState
-                    printfn "Could not send Lovense stop command: %s" (lovenseErrorMessage error)
-                    logger.Error(
-                        "runtime.unavailable.stop_error",
-                        "Could not send Lovense stop command.",
-                        {|
-                            error = lovenseErrorSummary error
-                            attemptSinceLastSuccess = nextFailureState.LovenseFailureAttemptsSinceSuccess
-                        |}
-                    )
-
-                    return state, nextFailureState
-            else
-                return state, failureState
+    let private neutralPlayer : BridgePlayer =
+        {
+            Id = "unavailable"
+            Aliases = []
+            Kills = 0
+            Deaths = 0
+            Assists = 0
+            CreepScore = 0
+            WardScore = 0.0
+            Level = 1
+            CurrentHealth = None
+            MaxHealth = None
         }
 
-    let private handleLeagueUnavailableVibration
-        (runtimeConfig: RuntimeConfig)
-        (lovenseConfig: LovenseConfig)
-        (lovenseClient: LovenseClient)
-        (logger: StructuredSessionLogger)
-        (recorder: GameplayRecorder option)
-        (state: GeneratorState)
-        (failureState: ConnectionFailureState)
-        (ct: CancellationToken)
-        =
-        task {
-            recorder |> Option.iter (fun recorder -> recorder.CloseActiveGame(DateTimeOffset.UtcNow))
-
-            let now = DateTimeOffset.UtcNow
-            let unavailableSince = failureState.LeagueUnavailableSince |> Option.defaultValue now
-            let elapsedMs = max 0L (int64 (now - unavailableSince).TotalMilliseconds)
-            let plan = Mapping.lolNotRunningPlan lovenseConfig elapsedMs
-            let actionString = LovenseActionCodec.planActionString plan
-            let intensity = Mapping.lolNotRunningIntensity elapsedMs
-            let shouldSend = shouldSendCommand runtimeConfig.ResendEveryMs now actionString state
-
-            logger.Info(
-                "runtime.league.unavailable_vibration",
-                "Decided whether to send Lovense fallback vibration while League is unavailable.",
-                {|
-                    shouldSend = shouldSend
-                    unavailableSince = unavailableSince
-                    elapsedMs = elapsedMs
-                    formula = "10 + ceil(sin(elapsedMs / 10000.0)) * 5"
-                    intensity = intensity
-                    attemptSinceLastSuccess = failureState.LeagueFailureAttemptsSinceSuccess
-                    retryDelayMs = runtimeConfig.UnavailableRetryMs
-                    candidateAction = actionString
-                    finalAction = actionString
-                    previousLastSent = state.LastSent
-                    previousLastSentCommand = state.LastSentCommand
-                |}
-            )
-
-            if shouldSend then
-                let! result = lovenseClient.SendCommandPlanAsync(plan, intensity, [], ct)
-
-                match result with
-                | Ok _ ->
-                    let nextFailureState = recordLovenseSuccess now failureState
-                    return { state with LastSent = Some(intensity, now); LastSentCommand = Some(actionString, now) }, nextFailureState
-
-                | Error error ->
-                    let nextFailureState = recordLovenseFailure (lovenseErrorMessage error) failureState
-
-                    logger.Error(
-                        "runtime.league.unavailable_vibration_error",
-                        "Could not send Lovense fallback vibration while League is unavailable.",
-                        {|
-                            error = lovenseErrorSummary error
-                            attemptSinceLastSuccess = nextFailureState.LovenseFailureAttemptsSinceSuccess
-                            retryDelayMs = runtimeConfig.UnavailableRetryMs
-                            candidateAction = actionString
-                            finalAction = actionString
-                        |}
-                    )
-
-                    return state, nextFailureState
-            else
-                return state, failureState
+    let private neutralSnapshot : BridgeSnapshot =
+        {
+            GameTime = 0.0
+            ActiveAliases = []
+            ActivePlayer = neutralPlayer
+            Players = [ neutralPlayer ]
+            Events = []
         }
 
-    let rec loop
-        (runtimeConfig: RuntimeConfig)
-        (scoringConfig: ScoringConfig)
-        (lovenseConfig: LovenseConfig)
-        (positionRotationConfig: PositionBasedRotationConfig)
-        (leagueClient: LeagueLiveClient)
-        (lovenseClient: LovenseClient)
-        (commandBuilder: ILovenseCommandValueBuilder)
-        (logger: StructuredSessionLogger)
-        (recorder: GameplayRecorder option)
-        (recordingConfigSummary: obj)
-        (state: GeneratorState)
-        (failureState: ConnectionFailureState)
-        (positionRotationState: PositionRotationState)
-        (loopIteration: int64)
-        (ct: CancellationToken)
-        : Task<unit>
-        =
-        task {
-            let currentLoopIteration = loopIteration + 1L
+    let private elapsedMs (since: DateTimeOffset option) (now: DateTimeOffset) =
+        since
+        |> Option.map (fun value -> max 0L (int64 (now - value).TotalMilliseconds))
+        |> Option.defaultValue 0L
 
-            try
-                let! fetchResult = leagueClient.FetchAllGameDataAsync ct
+    let private runtimeRuleContext (snapshot: RuntimeCacheSnapshot) now =
+        {
+            LolDataAcquired = snapshot.League.DataAcquired
+            OcrDataAcquired = snapshot.Ocr.DataAcquired
+            LovenseDataAcquired = snapshot.Lovense.DataAcquired
+            LolUnavailableElapsedMs = elapsedMs snapshot.League.UnavailableSince now
+            OcrUnavailableElapsedMs = elapsedMs snapshot.Ocr.UnavailableSince now
+            LovenseUnavailableElapsedMs = elapsedMs snapshot.Lovense.UnavailableSince now
+            LolFailureAttemptsSinceSuccess = snapshot.League.FailureAttemptsSinceSuccess
+            OcrFailureAttemptsSinceSuccess = snapshot.Ocr.DetectionFailures
+            LovenseFailureAttemptsSinceSuccess = snapshot.Lovense.FailureAttemptsSinceSuccess
+        }
 
-                match fetchResult with
-                | Error error ->
-                    let nextFailureState = recordLeagueFailure (leagueErrorMessage error) failureState
+    type LeagueCacheJob
+        (
+            runtimeConfig: RuntimeConfig,
+            scoringConfig: ScoringConfig,
+            leagueClient: LeagueLiveClient,
+            cache: RuntimeStateCache,
+            logger: StructuredSessionLogger
+        ) =
 
-                    printfn
-                        "Waiting for active LoL game. Attempt since last success: %i. Error: %s"
-                        nextFailureState.LeagueFailureAttemptsSinceSuccess
-                        (leagueErrorMessage error)
+        interface IAppJob with
+            member _.Name = "LeagueCacheJob"
 
-                    logger.Warn(
-                        "runtime.league.fetch_failed",
-                        "League data fetch failed; retrying after unavailable delay.",
-                        {|
-                            error = leagueErrorSummary error
-                            attemptSinceLastSuccess = nextFailureState.LeagueFailureAttemptsSinceSuccess
-                            retryDelayMs = runtimeConfig.UnavailableRetryMs
-                        |}
-                    )
+            member _.RunAsync(ct: CancellationToken) =
+                task {
+                    while not ct.IsCancellationRequested do
+                        try
+                            let! fetchResult = leagueClient.FetchAllGameDataAsync ct
 
-                    let! nextState, nextFailureState = handleLeagueUnavailableVibration runtimeConfig lovenseConfig lovenseClient logger recorder state nextFailureState ct
-                    do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
-                    return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextState nextFailureState positionRotationState currentLoopIteration ct
+                            match fetchResult with
+                            | Error error ->
+                                cache.UpdateLeagueFailure(leagueErrorMessage error)
+                                let current = cache.Read().League
+                                logger.Warn(
+                                    "runtime.league_job.failure",
+                                    "League cache job could not fetch League data.",
+                                    {| error = leagueErrorSummary error; attemptSinceLastSuccess = current.FailureAttemptsSinceSuccess |}
+                                )
+                                do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
 
-                | Ok gameData ->
-                    match Parser.parseGameSnapshotResult gameData.Root with
-                    | Error error ->
-                        let nextFailureState = recordLeagueFailure (string error) failureState
+                            | Ok gameData ->
+                                match Parser.parseGameSnapshotResult gameData.Root with
+                                | Error error ->
+                                    cache.UpdateLeagueFailure(string error)
+                                    let current = cache.Read().League
+                                    logger.Warn(
+                                        "runtime.league_job.parse_failed",
+                                        "League cache job fetched data but parser returned an error.",
+                                        {| parseError = error; attemptSinceLastSuccess = current.FailureAttemptsSinceSuccess; rawLength = gameData.RawText.Length |}
+                                    )
+                                    do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
 
-                        printfn "LoL data available, but active player could not be parsed."
-                        logger.Warn(
-                            "runtime.league.parse_failed",
-                            "LoL data available but parse failed; retrying after unavailable delay.",
-                            {|
-                                parseError = error
-                                attemptSinceLastSuccess = nextFailureState.LeagueFailureAttemptsSinceSuccess
-                                retryDelayMs = runtimeConfig.UnavailableRetryMs
-                                rawLength = gameData.RawText.Length
-                            |}
-                        )
+                                | Ok parsed ->
+                                    let bridgeSnapshot = Mapper.toBridgeSnapshot scoringConfig parsed.Snapshot
+                                    cache.UpdateLeagueSuccess bridgeSnapshot
+                                    logger.Debug(
+                                        "runtime.league_job.success",
+                                        "League cache updated.",
+                                        {| gameTime = bridgeSnapshot.GameTime; warnings = parsed.Warnings; version = cache.Read().League.Version |}
+                                    )
+                                    do! Task.Delay(runtimeConfig.LeaguePollMs, ct)
+                        with
+                        | :? OperationCanceledException -> ()
+                        | ex ->
+                            cache.UpdateLeagueFailure ex.Message
+                            logger.Error(
+                                "runtime.league_job.error",
+                                "League cache job hit an unexpected error.",
+                                {| error = ex.Message; errorType = ex.GetType().FullName |}
+                            )
+                            do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
+                } :> Task
 
-                        let! nextState, nextFailureState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger recorder state nextFailureState ct
-                        do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
-                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextState nextFailureState positionRotationState currentLoopIteration ct
+    type OcrCacheJob
+        (
+            runtimeConfig: RuntimeConfig,
+            positionRotationConfig: PositionBasedRotationConfig,
+            cache: RuntimeStateCache,
+            logger: StructuredSessionLogger
+        ) =
 
-                    | Ok parsed ->
-                        let now = DateTimeOffset.UtcNow
-                        let failureAfterLeagueSuccess = recordLeagueSuccess now failureState
-                        let lolSnapshot = parsed.Snapshot
-                        let snapshot = Mapper.toBridgeSnapshot scoringConfig lolSnapshot
-                        let evolved = evolve scoringConfig snapshot state
+        interface IAppJob with
+            member _.Name = "OcrCacheJob"
 
-                        let planningPosition, positionRotationState =
-                            if positionRotationConfig.Enable then
-                                let shouldCapture =
-                                    match positionRotationState.LastCaptureTime with
-                                    | None -> true
-                                    | Some lastTime ->
-                                        (now - lastTime).TotalMilliseconds >= float positionRotationConfig.CaptureIntervalMs
-
-                                if shouldCapture then
-                                    try
-                                        let minimapRegion =
-                                            {
-                                                X = positionRotationConfig.MinimapScreenX
-                                                Y = positionRotationConfig.MinimapScreenY
-                                                Width = positionRotationConfig.MinimapWidth
-                                                Height = positionRotationConfig.MinimapHeight
-                                            }
-                                        
-                                        let captureResult = ScreenCapture.captureLeagueMinimap minimapRegion
-                                        let template =
-                                            positionRotationConfig.TemplateImagePath
-                                            |> Option.bind MinimapDetector.loadTemplateFromFile
-                                        let detectionResult = MinimapDetector.detectPlayerPosition captureResult template
-                                        
-                                        let nextPositionRotationState =
-                                            {
-                                                positionRotationState with
-                                                    LastCaptureTime = Some now
-                                                    DetectionFailures = if detectionResult.Position.IsNone then positionRotationState.DetectionFailures + 1 else 0
-                                            }
-                                        
-                                        match detectionResult.Position with
-                                        | Some playerPosition ->
-                                            let mappingMode = PositionMapping.parseMappingMode positionRotationConfig.MappingMode
-                                            match mappingMode with
-                                            | Some mode ->
-                                                let rotationResult = PositionMapping.mapPositionToRotation playerPosition mode positionRotationConfig.RotationSensitivity
-                                                let quadrant = planningQuadrant playerPosition.NormalizedX playerPosition.NormalizedY
-                                                let planningPosition =
-                                                    {
-                                                        NormalizedX = playerPosition.NormalizedX
-                                                        NormalizedY = playerPosition.NormalizedY
-                                                        Confidence = playerPosition.Confidence
-                                                        Quadrant = quadrant
-                                                        Zone = string rotationResult.Zone
-                                                        DetectionMethod = detectionResult.DetectionMethod
-                                                    }
-                                                
-                                                logger.Info(
-                                                    "runtime.position_context.success",
-                                                    "Position context captured for Lovense rule planning.",
-                                                    {|
-                                                        normalizedX = playerPosition.NormalizedX
-                                                        normalizedY = playerPosition.NormalizedY
-                                                        confidence = playerPosition.Confidence
-                                                        detectionMethod = detectionResult.DetectionMethod
-                                                        templateConfigured = positionRotationConfig.TemplateImagePath.IsSome
-                                                        quadrant = quadrant
-                                                        mappingMethod = rotationResult.MappingMethod
-                                                        zone = string rotationResult.Zone
-                                                    |}
-                                                )
-                                                
-                                                Some planningPosition, nextPositionRotationState
-                                            | None ->
-                                                logger.Warn(
-                                                    "runtime.position_rotation.invalid_mode",
-                                                    "Invalid mapping mode in configuration.",
-                                                    {| mode = positionRotationConfig.MappingMode |}
-                                                )
-                                                None, nextPositionRotationState
-                                        | None ->
-                                            logger.Debug(
-                                                "runtime.position_rotation.no_detection",
-                                                "No player position detected in minimap.",
-                                                {|
-                                                    detectionMethod = detectionResult.DetectionMethod
-                                                    detectionFailures = nextPositionRotationState.DetectionFailures
-                                                    templateConfigured = positionRotationConfig.TemplateImagePath.IsSome
-                                                |}
-                                            )
-                                            None, nextPositionRotationState
-                                    with ex ->
-                                        logger.Error(
-                                            "runtime.position_rotation.error",
-                                            "Error during position-based rotation detection.",
-                                            {| error = ex.Message |}
-                                        )
-                                        None, positionRotationState
-                                else
-                                    None, positionRotationState
+            member _.RunAsync(ct: CancellationToken) =
+                task {
+                    while not ct.IsCancellationRequested do
+                        try
+                            if not positionRotationConfig.Enable then
+                                cache.UpdateOcrFailure "Position-based rotation is disabled."
+                                do! Task.Delay(runtimeConfig.OcrPollMs, ct)
                             else
-                                None, positionRotationState
+                                let minimapRegion =
+                                    {
+                                        X = positionRotationConfig.MinimapScreenX
+                                        Y = positionRotationConfig.MinimapScreenY
+                                        Width = positionRotationConfig.MinimapWidth
+                                        Height = positionRotationConfig.MinimapHeight
+                                    }
 
-                        let commandFrame =
-                            commandBuilder.Build
-                                {
-                                    PreviousState = state
-                                    Snapshot = snapshot
-                                    EvolvedState = evolved
-                                    Position = planningPosition
-                                    Now = now
-                                    LoopIteration = currentLoopIteration
-                                    RuntimePollMs = runtimeConfig.PollMs
-                                }
+                                let captureResult = ScreenCapture.captureLeagueMinimap minimapRegion
+                                let template = positionRotationConfig.TemplateImagePath |> Option.bind MinimapDetector.loadTemplateFromFile
+                                let detectionResult = MinimapDetector.detectPlayerPosition captureResult template
 
-                        let commandPlan = commandFrame.Plan
-                        let actionString = commandFrame.ActionString
-                        let breakdown = commandFrame.Breakdown
-                        let intensity = breakdown.Intensity
+                                match detectionResult.Position with
+                                | None ->
+                                    cache.UpdateOcrFailure "No player position detected in minimap."
+                                    logger.Debug(
+                                        "runtime.ocr_job.no_detection",
+                                        "OCR cache job did not detect minimap position.",
+                                        {| detectionMethod = detectionResult.DetectionMethod; detectionFailures = cache.Read().Ocr.DetectionFailures |}
+                                    )
 
-                        logger.Info(
-                            "runtime.league.success",
-                            "League data fetched and parsed successfully; resetting League retry counter.",
-                            {|
-                                previousAttemptsSinceLastSuccess = failureState.LeagueFailureAttemptsSinceSuccess
-                                warnings = parsed.Warnings
-                            |}
-                        )
+                                | Some playerPosition ->
+                                    match PositionMapping.parseMappingMode positionRotationConfig.MappingMode with
+                                    | None ->
+                                        cache.UpdateOcrFailure $"Invalid mapping mode: {positionRotationConfig.MappingMode}"
+                                    | Some mode ->
+                                        let rotationResult = PositionMapping.mapPositionToRotation playerPosition mode positionRotationConfig.RotationSensitivity
+                                        let planningPosition =
+                                            {
+                                                NormalizedX = playerPosition.NormalizedX
+                                                NormalizedY = playerPosition.NormalizedY
+                                                Confidence = playerPosition.Confidence
+                                                Quadrant = planningQuadrant playerPosition.NormalizedX playerPosition.NormalizedY
+                                                Zone = string rotationResult.Zone
+                                                DetectionMethod = detectionResult.DetectionMethod
+                                            }
 
-                        if not parsed.Warnings.IsEmpty then
+                                        cache.UpdateOcrSuccess planningPosition
+                                        logger.Debug(
+                                            "runtime.ocr_job.success",
+                                            "OCR cache updated with minimap position.",
+                                            {| normalizedX = planningPosition.NormalizedX; normalizedY = planningPosition.NormalizedY; quadrant = planningPosition.Quadrant; version = cache.Read().Ocr.Version |}
+                                        )
+
+                                do! Task.Delay(runtimeConfig.OcrPollMs, ct)
+                        with
+                        | :? OperationCanceledException -> ()
+                        | ex ->
+                            cache.UpdateOcrFailure ex.Message
                             logger.Warn(
-                                "runtime.league.parse_warnings",
-                                "League data parsed with optional fields defaulted.",
+                                "runtime.ocr_job.error",
+                                "OCR cache job hit a recoverable error.",
+                                {| error = ex.Message; errorType = ex.GetType().FullName |}
+                            )
+                            do! Task.Delay(runtimeConfig.OcrPollMs, ct)
+                } :> Task
+
+    type LovenseRuleJob
+        (
+            runtimeConfig: RuntimeConfig,
+            scoringConfig: ScoringConfig,
+            lovenseConfig: LovenseConfig,
+            lovenseClient: LovenseClient,
+            commandBuilder: ILovenseCommandValueBuilder,
+            cache: RuntimeStateCache,
+            logger: StructuredSessionLogger,
+            recorder: GameplayRecorder option,
+            recordingConfigSummary: obj
+        ) =
+
+        let mutable generatorState = initialState
+        let mutable previousStateBeforeEvolve = initialState
+        let mutable lastProcessedLeagueVersion = -1L
+        let mutable lastSentFunctionState = LovenseActionCodec.emptyState
+
+        let printStatus (snapshot: BridgeSnapshot) (breakdown: IntensityBreakdown) actionString =
+            printfn
+                "t=%6.1fs | K/D/A=%i/%i/%i | output=%i | action=%s"
+                snapshot.GameTime
+                snapshot.ActivePlayer.Kills
+                snapshot.ActivePlayer.Deaths
+                snapshot.ActivePlayer.Assists
+                breakdown.Intensity
+                actionString
+
+        interface IAppJob with
+            member _.Name = "LovenseRuleJob"
+
+            member _.RunAsync(ct: CancellationToken) =
+                task {
+                    while not ct.IsCancellationRequested do
+                        try
+                            let cacheSnapshot = cache.Read()
+                            let now = DateTimeOffset.UtcNow
+                            let activeSnapshot = cacheSnapshot.League.Snapshot |> Option.defaultValue neutralSnapshot
+
+                            if cacheSnapshot.League.DataAcquired && cacheSnapshot.League.Version <> lastProcessedLeagueVersion then
+                                previousStateBeforeEvolve <- generatorState
+                                generatorState <- evolve scoringConfig activeSnapshot generatorState
+                                lastProcessedLeagueVersion <- cacheSnapshot.League.Version
+                            else
+                                previousStateBeforeEvolve <- generatorState
+
+                            let commandFrame =
+                                commandBuilder.Build
+                                    {
+                                        PreviousState = previousStateBeforeEvolve
+                                        Snapshot = activeSnapshot
+                                        EvolvedState = generatorState
+                                        Position = if cacheSnapshot.Ocr.DataAcquired then cacheSnapshot.Ocr.Position else None
+                                        Now = now
+                                        LoopIteration = 0L
+                                        LastSentFunctionState = lastSentFunctionState
+                                        RuntimeContext = runtimeRuleContext cacheSnapshot now
+                                        RuntimePollMs = runtimeConfig.LovensePollMs
+                                    }
+
+                            logger.Debug(
+                                "runtime.lovense_job.calculation",
+                                "Lovense rule job calculated command frame from runtime cache.",
                                 {|
-                                    warnings = parsed.Warnings
-                                    rawLength = gameData.RawText.Length
+                                    cache =
+                                        {|
+                                            lolDataAcquired = cacheSnapshot.League.DataAcquired
+                                            ocrDataAcquired = cacheSnapshot.Ocr.DataAcquired
+                                            lovenseDataAcquired = cacheSnapshot.Lovense.DataAcquired
+                                            leagueVersion = cacheSnapshot.League.Version
+                                            ocrVersion = cacheSnapshot.Ocr.Version
+                                        |}
+                                    fullAction = commandFrame.ActionString
+                                    changedAction = commandFrame.ChangedActionString
+                                    changedFunctionState = commandFrame.ChangedFunctionState
+                                    ruleVariables = commandFrame.RuleVariables
+                                    ruleDiagnostics = commandFrame.Diagnostics
+                                    ruleTraces = commandFrame.RuleTraces
                                 |}
                             )
 
-                        logger.Debug(
-                            "runtime.calculation",
-                            "Calculated Lovense intensity from League data.",
-                            {|
-                                activePlayer =
-                                    {|
-                                        id = snapshot.ActivePlayer.Id
-                                        kills = snapshot.ActivePlayer.Kills
-                                        deaths = snapshot.ActivePlayer.Deaths
-                                        assists = snapshot.ActivePlayer.Assists
-                                        creepScore = snapshot.ActivePlayer.CreepScore
-                                        wardScore = snapshot.ActivePlayer.WardScore
-                                        level = snapshot.ActivePlayer.Level
-                                        currentHealth = snapshot.ActivePlayer.CurrentHealth
-                                        maxHealth = snapshot.ActivePlayer.MaxHealth
-                                    |}
-                                state =
-                                    {|
-                                        previousSeenEvents = state.SeenEventIds.Count
-                                        evolvedSeenEvents = evolved.SeenEventIds.Count
-                                        previousPulseCount = state.Pulses.Length
-                                        evolvedPulseCount = evolved.Pulses.Length
-                                        multikillCount = evolved.MultikillCount
-                                        healthPressure = evolved.HealthPressure
-                                        lastSent = evolved.LastSent
-                                        lastSentCommand = evolved.LastSentCommand
-                                        loopIteration = currentLoopIteration
-                                    |}
-                                breakdown =
-                                    {|
-                                        performanceScore = breakdown.PerformanceScore
-                                        normalizedScore = breakdown.NormalizedScore
-                                        multikillBase = breakdown.MultikillBase
-                                        deathPenalty = breakdown.DeathPenalty
-                                        rawBaseValue = breakdown.RawBaseValue
-                                        liveHealthPercent = breakdown.LiveHealthPercent
-                                        liveHealthMultiplier = breakdown.LiveHealthMultiplier
-                                        healthPressureMultiplier = breakdown.HealthPressureMultiplier
-                                        healthAdjustedBaseValue = breakdown.HealthAdjustedBaseValue
-                                        baseIntensity = breakdown.BaseIntensity
-                                        temporaryBoost = breakdown.TemporaryBoost
-                                        temporaryEffects = breakdown.TemporaryEffects |> List.map temporaryEffectLog
-                                        rawFinalValue = breakdown.RawFinalValue
-                                        intensity = breakdown.Intensity
-                                    |}
-                                commandPlan =
-                                    {|
-                                        action = actionString
-                                        reasons = commandPlan.Reasons |> List.map LovenseActionCodec.reasonToString
-                                        actions = commandPlan.Actions |> List.map LovenseActionCodec.actionToString
-                                        timeSec = commandPlan.TimeSec
-                                        stopPrevious = commandPlan.StopPrevious
-                                        builderState = commandFrame.BuilderState
-                                        functionStates =
-                                            commandFrame.FunctionStates
-                                            |> Map.toList
-                                            |> List.map (fun (fn, layers) ->
-                                                {|
-                                                    functionName = LovenseActionCodec.actionName fn
-                                                    baseLayer = layers.Base
-                                                    timedLayer = layers.Timed
-                                                    effectLayer = layers.Effect
-                                                    otherLayer = layers.Other
-                                                    final = layers.Final
-                                                    contributions = layers.Contributions
-                                                |})
-                                        stateDiff = commandFrame.StateDiff
-                                        ruleDiagnostics = commandFrame.Diagnostics
-                                        ruleTraces = commandFrame.RuleTraces
-                                        ruleVariables = commandFrame.RuleVariables
-                                    |}
-                            |}
-                        )
-
-                        printStatus snapshot evolved breakdown
-
-                        let! nextState =
-                            task {
-                                let shouldSendValue = shouldSendCommand runtimeConfig.ResendEveryMs now actionString evolved
-
-                                logger.Info(
-                                    "runtime.send_decision",
-                                    "Decided whether to send Lovense command.",
-                                    {|
-                                        shouldSend = shouldSendValue
-                                        intensity = intensity
-                                        now = now
-                                        previousLastSent = evolved.LastSent
-                                        previousLastSentCommand = evolved.LastSentCommand
-                                        resendEveryMs = runtimeConfig.ResendEveryMs
-                                        commandAction = actionString
-                                        commandReasons = commandPlan.Reasons |> List.map LovenseActionCodec.reasonToString
-                                    |}
+                            match commandFrame.ChangedPlan with
+                            | None ->
+                                logger.Debug(
+                                    "runtime.lovense.no_function_changes",
+                                    "Lovense command skipped because no function intensity changed.",
+                                    {| fullAction = commandFrame.ActionString; fullFunctionState = commandFrame.FullFunctionState |}
                                 )
+                                do! Task.Delay(runtimeConfig.LovensePollMs, ct)
 
-                                if shouldSendValue then
-                                    let! lovenseResult = lovenseClient.SendCommandPlanAsync(commandPlan, intensity, commandFrame.RuleTraces, ct)
+                            | Some changedPlan ->
+                                let changedActionString = LovenseActionCodec.planActionString changedPlan
+                                let shouldSend = shouldSendCommand runtimeConfig.ResendEveryMs now changedActionString generatorState
 
-                                    match lovenseResult with
-                                    | Ok _ ->
-                                        let nextFailureState = recordLovenseSuccess now failureAfterLeagueSuccess
+                                if not shouldSend then
+                                    logger.Debug(
+                                        "runtime.lovense.resend_suppressed",
+                                        "Lovense diff command suppressed by resend interval.",
+                                        {| changedAction = changedActionString; resendEveryMs = runtimeConfig.ResendEveryMs |}
+                                    )
+                                    do! Task.Delay(runtimeConfig.LovensePollMs, ct)
+                                else
+                                    let! result = lovenseClient.SendCommandPlanAsync(changedPlan, commandFrame.Breakdown.Intensity, commandFrame.RuleTraces, ct)
 
-                                        recorder
-                                        |> Option.iter (fun recorder ->
-                                            recorder.RecordPlan(
-                                                now,
-                                                recordingConfigSummary,
-                                                snapshot,
-                                                breakdown,
-                                                commandPlan,
-                                                actionString,
-                                                { Attempted = true; Success = Some true; Error = None }
-                                            ))
+                                    match result with
+                                    | Ok result ->
+                                        lastSentFunctionState <- commandFrame.FullFunctionState
+                                        cache.UpdateLovenseSuccess result.SocketConnected
+                                        generatorState <- { generatorState with LastSent = Some(commandFrame.Breakdown.Intensity, now); LastSentCommand = Some(changedActionString, now) }
+
+                                        cacheSnapshot.League.Snapshot
+                                        |> Option.iter (fun snapshot ->
+                                            recorder
+                                            |> Option.iter (fun recorder ->
+                                                recorder.RecordPlan(
+                                                    now,
+                                                    recordingConfigSummary,
+                                                    snapshot,
+                                                    commandFrame.Breakdown,
+                                                    changedPlan,
+                                                    changedActionString,
+                                                    { Attempted = true; Success = Some true; Error = None }
+                                                )))
 
                                         logger.Info(
-                                            "runtime.lovense.success",
-                                            "Lovense command sent successfully; resetting Lovense retry counter.",
-                                            {|
-                                                previousAttemptsSinceLastSuccess = failureAfterLeagueSuccess.LovenseFailureAttemptsSinceSuccess
-                                            |}
+                                            "runtime.lovense_job.send_success",
+                                            "Lovense diff command sent successfully.",
+                                            {| changedAction = changedActionString; changedFunctionState = commandFrame.ChangedFunctionState; fullAction = commandFrame.ActionString |}
                                         )
-
-                                        return { evolved with LastSent = Some(intensity, now); LastSentCommand = Some(actionString, now) }, nextFailureState, runtimeConfig.PollMs
+                                        printStatus activeSnapshot commandFrame.Breakdown changedActionString
+                                        do! Task.Delay(runtimeConfig.LovensePollMs, ct)
 
                                     | Error error ->
-                                        let nextFailureState = recordLovenseFailure (lovenseErrorMessage error) failureAfterLeagueSuccess
+                                        cache.UpdateLovenseFailure(lovenseErrorMessage error)
 
-                                        recorder
-                                        |> Option.iter (fun recorder ->
-                                            recorder.RecordPlan(
-                                                now,
-                                                recordingConfigSummary,
-                                                snapshot,
-                                                breakdown,
-                                                commandPlan,
-                                                actionString,
-                                                { Attempted = true; Success = Some false; Error = Some(lovenseErrorMessage error) }
-                                            ))
+                                        cacheSnapshot.League.Snapshot
+                                        |> Option.iter (fun snapshot ->
+                                            recorder
+                                            |> Option.iter (fun recorder ->
+                                                recorder.RecordPlan(
+                                                    now,
+                                                    recordingConfigSummary,
+                                                    snapshot,
+                                                    commandFrame.Breakdown,
+                                                    changedPlan,
+                                                    changedActionString,
+                                                    { Attempted = true; Success = Some false; Error = Some(lovenseErrorMessage error) }
+                                                )))
 
                                         logger.Error(
-                                            "runtime.lovense.send_failed",
-                                            "Lovense command failed; retrying after unavailable delay.",
-                                            {|
-                                                error = lovenseErrorSummary error
-                                                attemptSinceLastSuccess = nextFailureState.LovenseFailureAttemptsSinceSuccess
-                                                retryDelayMs = runtimeConfig.UnavailableRetryMs
-                                            |}
+                                            "runtime.lovense_job.send_failed",
+                                            "Lovense diff command failed; last sent function state was not advanced.",
+                                            {| error = lovenseErrorSummary error; changedAction = changedActionString; changedFunctionState = commandFrame.ChangedFunctionState |}
                                         )
-
-                                        return evolved, nextFailureState, runtimeConfig.UnavailableRetryMs
-                                else
-                                    recorder
-                                    |> Option.iter (fun recorder ->
-                                        recorder.RecordPlan(
-                                            now,
-                                            recordingConfigSummary,
-                                            snapshot,
-                                            breakdown,
-                                            commandPlan,
-                                            actionString,
-                                            { Attempted = false; Success = None; Error = None }
-                                        ))
-
-                                    return evolved, failureAfterLeagueSuccess, runtimeConfig.PollMs
-                            }
-
-                        let nextGeneratorState, nextFailureState, delayMs = nextState
-
-                        do! Task.Delay(delayMs, ct)
-                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextGeneratorState nextFailureState positionRotationState currentLoopIteration ct
-
-            with
-            | :? OperationCanceledException ->
-                logger.Info("runtime.cancelled", "Runtime loop cancelled.")
-                return ()
-
-            | ex ->
-                printfn "Waiting for active LoL game / Lovense app. Error: %s" ex.Message
-                logger.Error(
-                    "runtime.loop_error",
-                    "Waiting for active LoL game / Lovense app after an error.",
-                    {|
-                        error = ex.Message
-                        errorType = ex.GetType().FullName
-                    |}
-                )
-
-                let! nextState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger recorder state failureState ct
-                do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
-                let nextGeneratorState, nextFailureState = nextState
-                return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextGeneratorState nextFailureState positionRotationState currentLoopIteration ct
-        }
+                                        do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
+                        with
+                        | :? OperationCanceledException -> ()
+                        | ex ->
+                            cache.UpdateLovenseFailure ex.Message
+                            logger.Error(
+                                "runtime.lovense_job.error",
+                                "Lovense rule job hit an unexpected error.",
+                                {| error = ex.Message; errorType = ex.GetType().FullName |}
+                            )
+                            do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
+                } :> Task
