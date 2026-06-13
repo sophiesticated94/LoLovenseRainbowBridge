@@ -85,14 +85,14 @@ module SocketUrl =
                 match parseSocketUrlResponse response.Body with
                 | Ok info ->
                     logger.Info(
-                        "lovense.socket_url.success",
-                        "Received Lovense Socket.IO connection details.",
-                        {|
-                            correlationId = response.CorrelationId
-                            socketIoUrl = info.SocketIoUrl
-                            socketIoPath = info.SocketIoPath
-                        |}
-                    )
+                            "lovense.socket_url.success",
+                            "Received Lovense Socket.IO connection details.",
+                            {|
+                                correlationId = response.CorrelationId
+                                socketIoUrl = Shared.redactUrlSecrets info.SocketIoUrl
+                                socketIoPath = info.SocketIoPath
+                            |}
+                        )
 
                     return Ok info
 

@@ -11,8 +11,10 @@ type LeagueConfig =
 type LovenseConfig =
     {
         ToyId: string option
+        TransportMode: string
         Platform: string
         Developer: LovenseDeveloperConfig
+        StandardApi: LovenseStandardApiConfig
         LocalApi: LovenseLocalApiConfig
         CommandTimeSec: float
         DryRun: bool
@@ -29,12 +31,26 @@ and LovenseDeveloperConfig =
         UserToken: string option
     }
 
+and LovenseStandardApiConfig =
+    {
+        Enable: bool
+        CallbackListenUrl: string
+        PublicCallbackUrl: string option
+        GenerateQrOnStartup: bool
+        UseServerCommandFallback: bool
+        PairingQrExpiresHours: float
+    }
+
 and LovenseLocalApiConfig =
     {
         EnableGetToys: bool
+        EnableCommandFallback: bool
+        Domain: string option
+        HttpsPort: int option
         TimeoutMs: int
         AllowSelfSignedCertificate: bool
         HeaderPlatform: string
+        CapabilityRefreshIntervalSec: int
     }
 
 and LovenseMappingConfig =
@@ -292,8 +308,29 @@ module Configuration =
         if config.Lovense.CommandAckTimeoutMs <= 0 then
             invalidArg "Lovense.CommandAckTimeoutMs" "Lovense.CommandAckTimeoutMs must be greater than zero."
 
+        let allowedTransportModes = set [ "SOCKETAPI"; "STANDARDAPILOCAL"; "STANDARDAPISERVER"; "AUTO" ]
+
+        if not (allowedTransportModes.Contains(config.Lovense.TransportMode.ToUpperInvariant())) then
+            invalidArg "Lovense.TransportMode" "Lovense.TransportMode must be SocketApi, StandardApiLocal, StandardApiServer, or Auto."
+
+        if config.Lovense.StandardApi.Enable then
+            if String.IsNullOrWhiteSpace config.Lovense.StandardApi.CallbackListenUrl then
+                invalidArg "Lovense.StandardApi.CallbackListenUrl" "Lovense.StandardApi.CallbackListenUrl cannot be empty when Standard API is enabled."
+
+            if config.Lovense.StandardApi.PairingQrExpiresHours <= 0.0 then
+                invalidArg "Lovense.StandardApi.PairingQrExpiresHours" "Lovense.StandardApi.PairingQrExpiresHours must be greater than zero."
+
         if config.Lovense.LocalApi.TimeoutMs <= 0 then
             invalidArg "Lovense.LocalApi.TimeoutMs" "Lovense.LocalApi.TimeoutMs must be greater than zero."
+
+        if config.Lovense.LocalApi.CapabilityRefreshIntervalSec <= 0 then
+            invalidArg "Lovense.LocalApi.CapabilityRefreshIntervalSec" "Lovense.LocalApi.CapabilityRefreshIntervalSec must be greater than zero."
+
+        if config.Lovense.LocalApi.EnableCommandFallback || config.Lovense.LocalApi.EnableGetToys then
+            match config.Lovense.LocalApi.HttpsPort with
+            | Some port when port <= 0 || port > 65535 ->
+                invalidArg "Lovense.LocalApi.HttpsPort" "Lovense.LocalApi.HttpsPort must be in range 1..65535."
+            | _ -> ()
 
         if String.IsNullOrWhiteSpace config.Lovense.LocalApi.HeaderPlatform then
             invalidArg "Lovense.LocalApi.HeaderPlatform" "Lovense.LocalApi.HeaderPlatform cannot be empty."
@@ -550,6 +587,7 @@ module Configuration =
             Lovense =
                 {
                     ToyId = optionalString root "Lovense:ToyId"
+                    TransportMode = requiredValue root "Lovense:TransportMode"
                     Platform = requiredValue root "Lovense:Platform"
                     Developer =
                         {
@@ -558,12 +596,25 @@ module Configuration =
                             UserName = optionalString root "Lovense:Developer:UserName"
                             UserToken = optionalString root "Lovense:Developer:UserToken"
                         }
+                    StandardApi =
+                        {
+                            Enable = boolValue root "Lovense:StandardApi:Enable"
+                            CallbackListenUrl = requiredValue root "Lovense:StandardApi:CallbackListenUrl"
+                            PublicCallbackUrl = optionalString root "Lovense:StandardApi:PublicCallbackUrl"
+                            GenerateQrOnStartup = boolValue root "Lovense:StandardApi:GenerateQrOnStartup"
+                            UseServerCommandFallback = boolValue root "Lovense:StandardApi:UseServerCommandFallback"
+                            PairingQrExpiresHours = floatValue root "Lovense:StandardApi:PairingQrExpiresHours"
+                        }
                     LocalApi =
                         {
                             EnableGetToys = boolValue root "Lovense:LocalApi:EnableGetToys"
+                            EnableCommandFallback = boolValue root "Lovense:LocalApi:EnableCommandFallback"
+                            Domain = optionalString root "Lovense:LocalApi:Domain"
+                            HttpsPort = optionalString root "Lovense:LocalApi:HttpsPort" |> Option.bind (fun raw -> match Int32.TryParse raw with | true, value -> Some value | _ -> None)
                             TimeoutMs = intValue root "Lovense:LocalApi:TimeoutMs"
                             AllowSelfSignedCertificate = boolValue root "Lovense:LocalApi:AllowSelfSignedCertificate"
                             HeaderPlatform = requiredValue root "Lovense:LocalApi:HeaderPlatform"
+                            CapabilityRefreshIntervalSec = intValue root "Lovense:LocalApi:CapabilityRefreshIntervalSec"
                         }
                     CommandTimeSec = floatValue root "Lovense:CommandTimeSec"
                     DryRun = boolValue root "Lovense:DryRun"

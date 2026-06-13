@@ -2,6 +2,7 @@ namespace LoLovenseRainbowBridge
 
 open System
 open System.Net.Http
+open System.Text.RegularExpressions
 open System.Text.Json.Nodes
 
 module Shared =
@@ -20,6 +21,12 @@ module Shared =
 
     let clamp01 value =
         clamp 0.0 1.0 value
+
+    let redactUrlSecrets (value: string) =
+        if String.IsNullOrWhiteSpace value then
+            value
+        else
+            Regex.Replace(value, "(?i)([?&]ntoken=)[^&\\s\"]+", $"$1{Constants.Lovense.AuthTokenRedacted}")
 
     let insecureHttpClient () =
         let handler = new HttpClientHandler()

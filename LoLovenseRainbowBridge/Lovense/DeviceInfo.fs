@@ -287,3 +287,38 @@ module DeviceInfo =
             HttpPort = None
             WssPort = None
         }
+
+    let parseStandardCallback (rawText: string) =
+        let toyList = parseGetToysToyList rawText
+        let root =
+            try JsonNode.Parse(rawText)
+            with _ -> null
+
+        {
+            ToyList = toyList
+            SupportedFunctions =
+                let functions =
+                    toyList
+                    |> List.collect (fun toy -> toy.ExplicitFunctions |> Set.toList)
+                    |> Set.ofList
+                if functions.IsEmpty then tryExtractSupportedFunctions rawText else Some functions
+            CapabilityProfiles = toyList |> List.map inferToyCapabilityProfile
+            Domain = if isNull root then None else findValueByName "domain" root |> Option.bind (fun node -> try Some(node.GetValue<string>()) with _ -> None)
+            HttpsPort = if isNull root then None else findValueByName "httpsPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
+            HttpPort = if isNull root then None else findValueByName "httpPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
+            WssPort = if isNull root then None else findValueByName "wssPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
+        }
+
+    let callbackUid (rawText: string) =
+        try
+            let root = JsonNode.Parse(rawText)
+            if isNull root then None else Json.tryString Constants.Lovense.UserIdField root
+        with _ ->
+            None
+
+    let callbackUserToken (rawText: string) =
+        try
+            let root = JsonNode.Parse(rawText)
+            if isNull root then None else Json.tryString Constants.Lovense.UserTokenField root
+        with _ ->
+            None

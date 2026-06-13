@@ -93,6 +93,7 @@ let scoringConfig =
 let lovenseConfig =
     {
         ToyId = None
+        TransportMode = "Auto"
         Platform = "tests"
         Developer =
             {
@@ -101,12 +102,25 @@ let lovenseConfig =
                 UserName = None
                 UserToken = None
             }
+        StandardApi =
+            {
+                Enable = false
+                CallbackListenUrl = "http://localhost:17878/lovense/callback/"
+                PublicCallbackUrl = None
+                GenerateQrOnStartup = false
+                UseServerCommandFallback = true
+                PairingQrExpiresHours = 4.0
+            }
         LocalApi =
             {
                 EnableGetToys = true
+                EnableCommandFallback = true
+                Domain = Some "127.0.0.1"
+                HttpsPort = Some 30010
                 TimeoutMs = 3000
                 AllowSelfSignedCertificate = true
                 HeaderPlatform = "LoL Lovense Bridge"
+                CapabilityRefreshIntervalSec = 60
             }
         CommandTimeSec = 2.0
         DryRun = true
@@ -535,9 +549,13 @@ let ``lovense local get toys client posts command and parses response`` () =
     let localConfig =
         {
             EnableGetToys = true
+            EnableCommandFallback = true
+            Domain = Some "127.0.0.1"
+            HttpsPort = Some 30010
             TimeoutMs = 3000
             AllowSelfSignedCertificate = true
             HeaderPlatform = "LoL Lovense Bridge"
+            CapabilityRefreshIntervalSec = 60
         }
 
     let deviceInfo =
@@ -564,6 +582,161 @@ let ``lovense local get toys client posts command and parses response`` () =
         Assert.Equal("LoL Lovense Bridge", capturedPlatform)
         Assert.Equal("""{"command":"GetToys"}""", capturedBody)
         Assert.True(profile.StereoVibrationSupported)
+
+[<Fact>]
+let ``lovense local command fallback posts final function request`` () =
+    let mutable capturedUrl = ""
+    let mutable capturedPlatform = ""
+    let mutable capturedBody = ""
+
+    use handler =
+        new StubHttpMessageHandler(
+            HttpStatusCode.OK,
+            """{"code":200,"type":"OK","data":{}}""",
+            fun request body ->
+                capturedUrl <- request.RequestUri.ToString()
+                capturedPlatform <-
+                    if request.Headers.Contains(Constants.Lovense.PlatformHeader) then
+                        request.Headers.GetValues(Constants.Lovense.PlatformHeader) |> Seq.head
+                    else
+                        ""
+                capturedBody <- body
+        )
+
+    use http = new HttpClient(handler)
+    use logger = new StructuredSessionLogger(loggingConfig (tempPath "local-command-logs"))
+    let localConfig =
+        {
+            EnableGetToys = true
+            EnableCommandFallback = true
+            Domain = Some "127.0.0.1"
+            HttpsPort = Some 30010
+            TimeoutMs = 3000
+            AllowSelfSignedCertificate = true
+            HeaderPlatform = "LoL Lovense Bridge"
+            CapabilityRefreshIntervalSec = 60
+        }
+
+    let plan = Mapping.simpleVibratePlan lovenseConfig 16
+    let result =
+        LocalApi.sendCommandAsync http logger localConfig None plan "corr-local" CancellationToken.None
+        |> fun task -> task.GetAwaiter().GetResult()
+
+    match result with
+    | Error error ->
+        failwithf "Local command failed: %A" error
+    | Ok response ->
+        Assert.Equal(200, response.StatusCode)
+        Assert.Equal("https://127.0.0.1:30010/command", capturedUrl)
+        Assert.Equal("LoL Lovense Bridge", capturedPlatform)
+        Assert.Contains("\"command\":\"Function\"", capturedBody)
+        Assert.Contains("\"action\":\"Vibrate:16\"", capturedBody)
+        Assert.Contains("\"timeSec\":2", capturedBody)
+
+[<Fact>]
+let ``lovense standard qr request contains developer fields and redacts token`` () =
+    let developer =
+        {
+            Token = Some "dev-secret"
+            UserId = Some "uid-1"
+            UserName = Some "sophie"
+            UserToken = Some "user-token"
+        }
+
+    let body =
+        match StandardApi.buildQrCodeRequestBody developer with
+        | Ok body -> body
+        | Error error -> failwithf "Unexpected QR body error: %A" error
+
+    let redacted =
+        match StandardApi.buildRedactedQrCodeRequestBody developer with
+        | Ok body -> body
+        | Error error -> failwithf "Unexpected redacted QR body error: %A" error
+
+    Assert.Contains("\"token\":\"dev-secret\"", body)
+    Assert.Contains("\"uid\":\"uid-1\"", body)
+    Assert.Contains("\"uname\":\"sophie\"", body)
+    Assert.Contains("\"utoken\":\"user-token\"", body)
+    Assert.Contains("\"v\":2", body)
+    Assert.DoesNotContain("dev-secret", redacted)
+    Assert.DoesNotContain("user-token", redacted)
+
+[<Fact>]
+let ``lovense standard callback parser extracts local endpoint and toys`` () =
+    let raw =
+        """{"uid":"uid-1","utoken":"u-token","domain":"192-168-1-44.lovense.club","httpsPort":"34568","httpPort":"34567","wssPort":"34568","toys":{"toy-a":{"id":"toy-a","name":"gemini","status":1,"battery":88,"fullFunctionNames":["Vibrate1","Vibrate2"]}}}"""
+
+    let developer =
+        {
+            Token = Some "dev-token"
+            UserId = Some "uid-1"
+            UserName = Some "sophie"
+            UserToken = Some "u-token"
+        }
+
+    match StandardApi.validateCallback developer raw with
+    | Error error -> failwithf "Callback rejected unexpectedly: %s" error
+    | Ok deviceInfo ->
+        Assert.Equal(Some "192-168-1-44.lovense.club", deviceInfo.Domain)
+        Assert.Equal(Some 34568, deviceInfo.HttpsPort)
+        Assert.Equal(Some 34567, deviceInfo.HttpPort)
+        let profile = Assert.Single(deviceInfo.CapabilityProfiles)
+        Assert.True(profile.StereoVibrationSupported)
+        Assert.Contains(Constants.Lovense.Vibrate1Action, profile.SupportedFunctions)
+        Assert.Contains(Constants.Lovense.Vibrate2Action, profile.SupportedFunctions)
+
+[<Fact>]
+let ``lovense standard callback rejects unexpected uid`` () =
+    let developer =
+        {
+            Token = Some "dev-token"
+            UserId = Some "expected"
+            UserName = None
+            UserToken = None
+        }
+
+    match StandardApi.validateCallback developer """{"uid":"actual","toys":{}}""" with
+    | Error error -> Assert.Contains("Unexpected uid", error)
+    | Ok _ -> failwith "Callback should have been rejected."
+
+[<Fact>]
+let ``lovense standard server command redacts developer token and posts function request`` () =
+    let mutable capturedUrl = ""
+    let mutable capturedBody = ""
+
+    use handler =
+        new StubHttpMessageHandler(
+            HttpStatusCode.OK,
+            """{"code":0,"message":"Success","data":{}}""",
+            fun request body ->
+                capturedUrl <- request.RequestUri.ToString()
+                capturedBody <- body
+        )
+
+    use http = new HttpClient(handler)
+    use logger = new StructuredSessionLogger(loggingConfig (tempPath "standard-server-command-logs"))
+    let developer =
+        {
+            Token = Some "dev-secret"
+            UserId = Some "uid-1"
+            UserName = None
+            UserToken = None
+        }
+
+    let plan = Mapping.simpleVibratePlan lovenseConfig 10
+    let result =
+        StandardApi.sendServerCommandAsync http logger developer plan "corr-standard" CancellationToken.None
+        |> fun task -> task.GetAwaiter().GetResult()
+
+    match result with
+    | Error error -> failwithf "Standard server command failed: %A" error
+    | Ok response ->
+        Assert.Equal(200, response.StatusCode)
+        Assert.Equal(Constants.Lovense.StandardServerCommand, capturedUrl)
+        Assert.Contains("\"token\":\"dev-secret\"", capturedBody)
+        Assert.Contains("\"uid\":\"uid-1\"", capturedBody)
+        Assert.Contains("\"command\":\"Function\"", capturedBody)
+        Assert.Contains("\"action\":\"Vibrate:10\"", capturedBody)
 
 [<Fact>]
 let ``lovense toy capability inference detects stereo gemini and single ferri`` () =
@@ -1432,6 +1605,14 @@ let ``default configuration enables position rotation`` () =
     Assert.Equal("data/gameplay.sqlite", config.Recording.DatabasePath.Replace('\\', '/'))
     Assert.Equal(100, config.Recording.SliceMs)
     Assert.True(config.Lovense.LocalApi.EnableGetToys)
+    Assert.True(config.Lovense.LocalApi.EnableCommandFallback)
+    Assert.Equal(Some "127.0.0.1", config.Lovense.LocalApi.Domain)
+    Assert.Equal(Some 30010, config.Lovense.LocalApi.HttpsPort)
+    Assert.Equal(60, config.Lovense.LocalApi.CapabilityRefreshIntervalSec)
+    Assert.Equal("Auto", config.Lovense.TransportMode)
+    Assert.True(config.Lovense.StandardApi.Enable)
+    Assert.True(config.Lovense.StandardApi.GenerateQrOnStartup)
+    Assert.True(config.Lovense.StandardApi.UseServerCommandFallback)
     Assert.NotEmpty(config.Lovense.Mapping.FunctionProfiles)
     Assert.NotEmpty(config.Lovense.Mapping.Rules)
 

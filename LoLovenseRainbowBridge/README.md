@@ -6,8 +6,8 @@ Functional F# bridge:
 League of Legends Live Client API
 → LeagueOfLegends adapter
 → Bridge domain scoring
-→ Lovense Standard Socket API adapter
-→ Vibrate:0..20
+→ Lovense Socket API or Standard API transport
+→ capability-filtered Lovense Function commands
 ```
 
 ## Project layout
@@ -26,9 +26,10 @@ Lovense/SocketUrl.fs              Lovense getSocketUrl flow
 Lovense/DeviceInfo.fs             toyList and capability parsing
 Lovense/CapabilityResolver.fs     per-toy capability and stereo resolver
 Lovense/RuleEngine.fs             configurable rule interpreter and command builder
-Lovense/LocalApi.fs               Local API GetToys capability enrichment
+Lovense/StandardApi.fs            Standard API QR/callback/server-command flow
+Lovense/LocalApi.fs               Local API GetToys and local command transport
 Lovense/SocketRuntime.fs          Socket.IO connection and listeners
-Lovense/Client.fs                 thin Lovense Socket API facade
+Lovense/Client.fs                 Lovense facade and transport selection
 Recording/Recording.fs            SQLite gameplay recording and replay
 App/Runtime.fs                    orchestration loop
 ScreenCapture/ScreenCapture.fs    Windows screen-region capture
@@ -57,7 +58,11 @@ Optional:
 $env:LOVENSE_TOY_ID="your_toy_id"
 ```
 
-Lovense uses the Standard Socket API workflow:
+By default `Lovense.TransportMode` is `Auto`, so the bridge can use the
+Standard Socket API path first and fall back to Standard API local/server command
+paths when configured.
+
+Standard Socket API workflow:
 
 1. `getToken` with local-only developer settings:
    `Lovense.Developer.Token`, `Lovense.Developer.UserId`, optional
@@ -66,6 +71,20 @@ Lovense uses the Standard Socket API workflow:
 3. Socket.IO websocket connection.
 4. QR/device/app status listeners.
 5. `basicapi_send_toy_command_ts` Function commands.
+
+Standard API workflow:
+
+1. Configure the Lovense Developer Dashboard callback URL to match
+   `Lovense.StandardApi.PublicCallbackUrl` or a tunnel that forwards to
+   `Lovense.StandardApi.CallbackListenUrl`.
+2. The bridge calls `api/lan/getQrCode` with the local developer token and prints
+   the pairing QR/code.
+3. After pairing, Lovense Remote posts `domain`, ports, and toy info to the local
+   callback listener.
+4. The bridge refreshes `GetToys` at most once per
+   `Lovense.LocalApi.CapabilityRefreshIntervalSec` seconds.
+5. Commands can be emitted through `https://{domain}:{httpsPort}/command`; if
+   enabled, Standard API server command fallback can use `api/lan/v2/command`.
 
 Do not configure `Lovense.AuthToken`; it is intentionally not a public app
 setting. Put real developer values only in ignored `appsettings.Local.json`.
@@ -242,13 +261,14 @@ available toys to `track.log` as `lovense.toys.available`, with toy ids redacted
 connected state, battery, explicit functions from Lovense, inferred functions,
 stereo viability, and notes.
 
-When Socket API device info includes `domain` and `httpsPort`, the bridge can
-also call the Lovense Local API command `GetToys`:
+When Socket API device info or Standard API callback data includes `domain` and
+`httpsPort`, the bridge can also call the Lovense Local API command `GetToys`:
 
 ```json
 "Lovense": {
   "LocalApi": {
     "EnableGetToys": true,
+    "CapabilityRefreshIntervalSec": 60,
     "TimeoutMs": 3000,
     "AllowSelfSignedCertificate": true,
     "HeaderPlatform": "LoL Lovense Bridge"
@@ -256,10 +276,11 @@ also call the Lovense Local API command `GetToys`:
 }
 ```
 
-`GetToys` is used only for capability enrichment. Commands still go through the
-Standard Socket API. The Local API response is normalized whether `data.toys` is
-returned as an object or as a JSON string, and `fullFunctionNames` /
-`shortFunctionNames` become the preferred capability source.
+`GetToys` is used for capability enrichment and is rate-limited by the cache
+interval, so it is not called for every command. The Local API response is
+normalized whether `data.toys` is returned as an object or as a JSON string, and
+`fullFunctionNames` / `shortFunctionNames` become the preferred capability
+source.
 
 Known behavior:
 

@@ -81,6 +81,9 @@ type StructuredSessionLogger(config: LoggingConfig) =
     let redactSensitiveJson (rawText: string) =
         let sensitiveKeys = set [ "authtoken"; "token"; "utoken" ]
 
+        let redactText value =
+            Shared.redactUrlSecrets value
+
         let rec redactNode (node: JsonNode) =
             if isNull node then
                 ()
@@ -107,13 +110,14 @@ type StructuredSessionLogger(config: LoggingConfig) =
                 rawText
             else
                 redactNode root
-                root.ToJsonString(compactOptions)
+                root.ToJsonString(compactOptions) |> redactText
         with _ ->
             Regex.Replace(
                 rawText,
                 """(?i)(""(?:authToken|token|utoken)""\s*:\s*"")[^""]*("")""",
                 $"$1{Constants.Lovense.AuthTokenRedacted}$2"
             )
+            |> redactText
 
     let writeLine (writer: StreamWriter) (entry: JsonObject) =
         writer.WriteLine(entry.ToJsonString(compactOptions))
@@ -197,7 +201,7 @@ type StructuredSessionLogger(config: LoggingConfig) =
             "Raw Lovense Socket API HTTP exchange."
             {|
                 correlationId = correlationId
-                url = url
+                url = Shared.redactUrlSecrets url
                 direction = direction
                 statusCode = statusCode
                 body = body |> redactSensitiveJson |> normalizeRawJson

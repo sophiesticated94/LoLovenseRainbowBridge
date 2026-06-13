@@ -41,6 +41,16 @@ module Program =
                             userNameConfigured = config.Lovense.Developer.UserName.IsSome
                             userTokenConfigured = config.Lovense.Developer.UserToken.IsSome
                         |}
+                    transportMode = config.Lovense.TransportMode
+                    standardApi =
+                        {|
+                            enable = config.Lovense.StandardApi.Enable
+                            callbackListenUrl = config.Lovense.StandardApi.CallbackListenUrl
+                            publicCallbackUrl = config.Lovense.StandardApi.PublicCallbackUrl
+                            generateQrOnStartup = config.Lovense.StandardApi.GenerateQrOnStartup
+                            useServerCommandFallback = config.Lovense.StandardApi.UseServerCommandFallback
+                            pairingQrExpiresHours = config.Lovense.StandardApi.PairingQrExpiresHours
+                        |}
                     localApi = config.Lovense.LocalApi
                     toyId = config.Lovense.ToyId |> Option.map (fun _ -> "<configured>")
                     platform = config.Lovense.Platform
@@ -119,6 +129,7 @@ module Program =
 
         | Some gameId, _ ->
             use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger)
+            lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult()
 
             match recorder with
             | None ->
@@ -143,6 +154,7 @@ module Program =
         | None, false ->
             use leagueClient = new LeagueLiveClient(config.League.BaseUrl, logger)
             use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger)
+            lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult()
             use serviceProvider =
                 ServiceCollection()
                     .AddSingleton<IRuleExpressionEvaluator, RuleExpressionEvaluator>()

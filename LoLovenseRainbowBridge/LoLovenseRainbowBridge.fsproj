@@ -51,6 +51,7 @@
     <Compile Include="Lovense\Mapping.fs" />
     <Compile Include="Lovense\Transport.fs" />
     <Compile Include="Lovense\DeviceInfo.fs" />
+    <Compile Include="Lovense\StandardApi.fs" />
     <Compile Include="Lovense\LocalApi.fs" />
     <Compile Include="Lovense\Auth.fs" />
     <Compile Include="Lovense\SocketUrl.fs" />

@@ -14,6 +14,12 @@ module Constants =
         let GetSocketUrl = "https://api.lovense-api.com/api/basicApi/getSocketUrl"
 
         [<Literal>]
+        let GetQrCode = "https://api.lovense-api.com/api/lan/getQrCode"
+
+        [<Literal>]
+        let StandardServerCommand = "https://api.lovense-api.com/api/lan/v2/command"
+
+        [<Literal>]
         let CommandName = "Function"
 
         [<Literal>]
@@ -108,6 +114,9 @@ module Constants =
 
         [<Literal>]
         let UserTokenField = "utoken"
+
+        [<Literal>]
+        let QrField = "qr"
 
         [<Literal>]
         let CodeField = "code"

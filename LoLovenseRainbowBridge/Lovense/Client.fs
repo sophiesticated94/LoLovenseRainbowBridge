@@ -16,12 +16,18 @@ type private LovenseSessionState =
     {
         Socket: SocketIO option
         SocketInfo: CachedSessionValue<SocketUrlInfo> option
+        StandardQrCode: CachedSessionValue<StandardApiQrCodeInfo> option
         QrCodeLogged: bool
         SupportedFunctions: Set<string> option
         CapabilityProfiles: LovenseToyCapabilityProfile list
         GeneratedAuthToken: CachedSessionValue<string> option
         LatestDeviceInfo: LovenseDeviceInfo option
     }
+
+type private SessionRetryPolicy =
+    | DoNotRetry
+    | RetrySocketUrlOnly
+    | RetryAuthAndSocketUrl
 
 type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: StructuredSessionLogger) =
 
@@ -38,12 +44,16 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
         {
             Socket = None
             SocketInfo = None
+            StandardQrCode = None
             QrCodeLogged = false
             SupportedFunctions = None
             CapabilityProfiles = []
             GeneratedAuthToken = None
             LatestDeviceInfo = None
         }
+
+    let mutable nextLocalCapabilityRefreshAt = DateTimeOffset.MinValue
+    let mutable standardCallbackServer: StandardApiCallbackServer option = None
 
     let invariantFloat (value: float) =
         value.ToString(CultureInfo.InvariantCulture)
@@ -63,11 +73,39 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
     let onDeviceInfo (deviceInfo: LovenseDeviceInfo) =
         task {
             applyDeviceInfo deviceInfo
+            nextLocalCapabilityRefreshAt <- DateTimeOffset.MinValue
+        }
 
-            if config.LocalApi.EnableGetToys then
-                let! localResult = LocalApi.getToysAsync localHttp logger config.LocalApi deviceInfo CancellationToken.None
+    let onQrCode () =
+        if not session.QrCodeLogged then
+            session <- { session with QrCodeLogged = true }
+            printfn "Lovense QR code event received. See track.log or lovense.log if raw logging is enabled."
 
-                match localResult with
+    let tryRefreshLocalGetToysAsync (ct: CancellationToken) =
+        task {
+            let now = DateTimeOffset.UtcNow
+
+            if not config.LocalApi.EnableGetToys || now < nextLocalCapabilityRefreshAt then
+                return ()
+            else
+                nextLocalCapabilityRefreshAt <- now.AddSeconds(float config.LocalApi.CapabilityRefreshIntervalSec)
+
+                let deviceInfo =
+                    session.LatestDeviceInfo
+                    |> Option.defaultValue
+                        {
+                            ToyList = []
+                            SupportedFunctions = session.SupportedFunctions
+                            CapabilityProfiles = session.CapabilityProfiles
+                            Domain = config.LocalApi.Domain
+                            HttpsPort = config.LocalApi.HttpsPort
+                            HttpPort = None
+                            WssPort = None
+                        }
+
+                let! result = LocalApi.getToysAsync localHttp logger config.LocalApi deviceInfo ct
+
+                match result with
                 | Ok localInfo when not localInfo.CapabilityProfiles.IsEmpty ->
                     let merged =
                         {
@@ -78,15 +116,46 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                         }
 
                     applyDeviceInfo merged
-
-                | _ ->
-                    ()
+                    logger.Debug(
+                        "lovense.local_get_toys.cache_refreshed",
+                        "Lovense Local API capability cache refreshed.",
+                        {| nextRefreshAt = nextLocalCapabilityRefreshAt; toyCount = merged.ToyList.Length |}
+                    )
+                | Error error ->
+                    logger.Debug(
+                        "lovense.local_get_toys.cache_refresh_skipped",
+                        "Lovense Local API capability cache refresh failed; old cache remains active.",
+                        {| nextRefreshAt = nextLocalCapabilityRefreshAt; error = string error |}
+                    )
+                | _ -> ()
         }
 
-    let onQrCode () =
-        if not session.QrCodeLogged then
-            session <- { session with QrCodeLogged = true }
-            printfn "Lovense QR code event received. See track.log or lovense.log if raw logging is enabled."
+    let ensureStandardApiReadyAsync (ct: CancellationToken) =
+        task {
+            if config.StandardApi.Enable then
+                if standardCallbackServer.IsNone then
+                    let onStandardDeviceInfo deviceInfo =
+                        applyDeviceInfo deviceInfo
+                        nextLocalCapabilityRefreshAt <- DateTimeOffset.MinValue
+
+                    standardCallbackServer <-
+                        StandardApi.startCallbackListener logger config.StandardApi config.Developer onStandardDeviceInfo
+
+                if config.StandardApi.GenerateQrOnStartup && session.StandardQrCode.IsNone then
+                    let! qrResult = StandardApi.requestQrCodeAsync http logger config.StandardApi config.Developer ct
+
+                    match qrResult with
+                    | Ok qrInfo ->
+                        session <- { session with StandardQrCode = Some { Value = qrInfo; AcquiredAt = DateTimeOffset.UtcNow } }
+                        printfn "Lovense Standard API pairing code: %s" qrInfo.Code
+                        printfn "Lovense Standard API QR: %s" qrInfo.Qr
+                    | Error error ->
+                        logger.Warn(
+                            "lovense.standard.prepare_failed",
+                            "Lovense Standard API QR/code preparation failed.",
+                            {| error = string error |}
+                        )
+        }
 
     let createCommandPayload (plan: LovenseCommandPlan) correlationId =
         let toyPart =
@@ -174,10 +243,23 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                 notes = profile.Notes
             |})
 
-    let invalidateSessionCache reason =
+    let invalidateSocketUrl reason =
+        logger.Warn(
+            "lovense.socket_url.cache_invalidated",
+            "Lovense cached Socket.IO URL invalidated before retry.",
+            {| reason = reason |}
+        )
+
+        session <-
+            {
+                session with
+                    SocketInfo = None
+            }
+
+    let invalidateAuthAndSocketUrl reason =
         logger.Warn(
             "lovense.session.cache_invalidated",
-            "Lovense cached auth/socket session data invalidated before retry.",
+            "Lovense cached auth token and Socket.IO URL invalidated before retry.",
             {| reason = reason |}
         )
 
@@ -188,10 +270,30 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                     SocketInfo = None
             }
 
-    let shouldRetryWithFreshSession error =
+    let containsAny (needles: string list) (value: string) =
+        let haystack = if isNull value then "" else value.ToUpperInvariant()
+        needles |> List.exists (fun needle -> haystack.Contains(needle.ToUpperInvariant(), StringComparison.Ordinal))
+
+    let retryPolicyFor error =
         match error with
-        | MissingDeveloperCredentials _ -> false
-        | _ -> true
+        | MissingDeveloperCredentials _ ->
+            DoNotRetry
+        | SocketUrlRejected(_, _, message)
+            when containsAny [ "AUTH"; "TOKEN"; "EXPIRED"; "INVALID"; "UNAUTHORIZED" ] message ->
+            RetryAuthAndSocketUrl
+        | SocketUrlRejected _ ->
+            DoNotRetry
+        | SocketUrlRequestFailed _ ->
+            RetrySocketUrlOnly
+        | SocketConnectFailed _ ->
+            RetrySocketUrlOnly
+        | SocketDisconnected _ ->
+            RetrySocketUrlOnly
+        | UnexpectedConnectionError(_, errorType)
+            when containsAny [ "AUTH"; "TOKEN"; "UNAUTHORIZED" ] errorType ->
+            RetryAuthAndSocketUrl
+        | UnexpectedConnectionError _ ->
+            RetrySocketUrlOnly
 
     let resolveAuthTokenAsync forceRefresh (ct: CancellationToken) =
         task {
@@ -237,7 +339,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                 logger.Debug(
                     "lovense.socket_url.cache_hit",
                     "Using cached Lovense Socket.IO URL from application state.",
-                    {| acquiredAt = cached.AcquiredAt; socketIoUrl = cached.Value.SocketIoUrl; socketIoPath = cached.Value.SocketIoPath |}
+                    {| acquiredAt = cached.AcquiredAt; socketIoUrl = Shared.redactUrlSecrets cached.Value.SocketIoUrl; socketIoPath = cached.Value.SocketIoPath |}
                 )
 
                 return Ok cached.Value
@@ -261,7 +363,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                     logger.Info(
                         "lovense.socket_url.refresh",
                         "Lovense Socket.IO URL stored in application state.",
-                        {| acquiredAt = acquiredAt; socketIoUrl = info.SocketIoUrl; socketIoPath = info.SocketIoPath |}
+                        {| acquiredAt = acquiredAt; socketIoUrl = Shared.redactUrlSecrets info.SocketIoUrl; socketIoPath = info.SocketIoPath |}
                     )
 
                     return Ok info
@@ -273,6 +375,9 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
         | None -> Constants.Lovense.GetSocketUrl
 
     member _.LatestDeviceInfo = session.LatestDeviceInfo
+
+    member _.PrepareStandardApiAsync(ct: CancellationToken) =
+        ensureStandardApiReadyAsync ct
 
     member _.EnsureConnectedAsync(ct: CancellationToken) =
         task {
@@ -303,16 +408,16 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                     do! connectGate.WaitAsync(ct)
 
                     try
-                        let connectOnce forceRefresh =
+                        let connectOnce forceAuthRefresh forceSocketUrlRefresh =
                             task {
-                                let! authTokenResult = resolveAuthTokenAsync forceRefresh ct
+                                let! authTokenResult = resolveAuthTokenAsync forceAuthRefresh ct
 
                                 match authTokenResult with
                                 | Error error ->
                                     return Error error
 
                                 | Ok authToken ->
-                                    let! socketUrlResult = resolveSocketUrlAsync authToken forceRefresh ct
+                                    let! socketUrlResult = resolveSocketUrlAsync authToken forceSocketUrlRefresh ct
 
                                     match socketUrlResult with
                                     | Error error ->
@@ -342,19 +447,25 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                                     }
 
                         | _ ->
-                            let! firstAttempt = connectOnce false
+                            let! firstAttempt = connectOnce false false
 
                             match firstAttempt with
                             | Ok state ->
                                 return Ok state
 
-                            | Error error when shouldRetryWithFreshSession error ->
-                                invalidateSessionCache (string error)
-                                let! secondAttempt = connectOnce true
-                                return secondAttempt
-
                             | Error error ->
-                                return Error error
+                                match retryPolicyFor error with
+                                | DoNotRetry ->
+                                    return Error error
+                                | RetrySocketUrlOnly ->
+                                    invalidateSocketUrl (string error)
+                                    let! secondAttempt = connectOnce false true
+                                    return secondAttempt
+                                | RetryAuthAndSocketUrl ->
+                                    invalidateAuthAndSocketUrl (string error)
+                                    let! secondAttempt = connectOnce true true
+                                    return secondAttempt
+
                     finally
                         connectGate.Release() |> ignore
         }
@@ -363,6 +474,8 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
         task {
             let safeValue = requestedValue |> Shared.clamp scoringConfig.MinIntensity scoringConfig.MaxIntensity
             let correlationId = Transport.newCorrelationId()
+            do! ensureStandardApiReadyAsync ct
+            do! tryRefreshLocalGetToysAsync ct
             let candidateActionString = LovenseActionCodec.planActionString plan
             let capabilityResolution = CapabilityResolver.resolve config session.CapabilityProfiles session.SupportedFunctions plan
             let filteredPlan = capabilityResolution.Plan
@@ -461,57 +574,31 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                                 SocketConnected = false
                             }
                 else
-                    let! connected = this.EnsureConnectedAsync ct
+                    let transportMode = config.TransportMode.ToUpperInvariant()
 
-                    match connected with
-                    | Error error ->
-                        return Error(NotConnected error)
+                    let sendLocalCommandAsync () =
+                        LocalApi.sendCommandAsync localHttp logger config.LocalApi session.LatestDeviceInfo filteredPlan correlationId ct
 
-                    | Ok _ ->
-                        match session.Socket with
-                        | None ->
-                            return Error(NotConnected(SocketDisconnected "Socket was not available after successful connection."))
+                    let sendStandardServerCommandAsync () =
+                        StandardApi.sendServerCommandAsync http logger config.Developer filteredPlan correlationId ct
 
-                        | Some client when not client.Connected ->
-                            return Error(NotConnected(SocketDisconnected "Socket disconnected before command emit."))
+                    if transportMode = "STANDARDAPILOCAL" then
+                        let! localResult = sendLocalCommandAsync ()
 
-                        | Some client ->
-                            logger.Info(
-                                "lovense.command.emit",
-                                "Emitting Lovense Socket API toy command.",
-                                {|
-                                    correlationId = correlationId
-                                    requestedValue = requestedValue
-                                    safeValue = safeValue
-                                    eventName = Constants.Lovense.SendToyCommandEmit
-                                    action = actionString
-                                    candidateAction = candidateActionString
-                                    finalAction = actionString
-                                    payloadAction = actionString
-                                    droppedActions = droppedActions
-                                    finalActions = capabilityResolution.FinalActions
-                                    stereoApplied = capabilityResolution.StereoApplied
-                                    stereoFallbackApplied = capabilityResolution.StereoFallbackApplied
-                                    reasons = commandReasons
-                                    capabilitySource = capabilitySource
-                                    ruleMapping = mappingSummary
-                                    payloadLength = payload.Length
-                                    rawLogged = logger.IsRawLovenseEnabled
-                                |}
-                            )
-
-                            let! emitResult =
-                                Transport.emitJsonAsync
-                                    client
-                                    logger
-                                    Constants.Lovense.SendToyCommandEmit
-                                    payload
-                                    config.CommandAckTimeoutMs
-                                    ct
-
-                            match emitResult with
-                            | Error error ->
-                                return Error error
+                        match localResult with
+                        | Ok _ ->
+                            return
+                                Ok
+                                    {
+                                        RequestedValue = requestedValue
+                                        SafeValue = safeValue
+                                        DryRun = false
+                                        CorrelationId = correlationId
+                                        SocketConnected = false
+                                    }
+                        | Error localError when config.StandardApi.UseServerCommandFallback ->
+                            let! serverResult = sendStandardServerCommandAsync ()
+                            match serverResult with
                             | Ok _ ->
                                 return
                                     Ok
@@ -520,8 +607,129 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                                             SafeValue = safeValue
                                             DryRun = false
                                             CorrelationId = correlationId
-                                            SocketConnected = client.Connected
+                                            SocketConnected = false
                                         }
+                            | Error serverError -> return Error serverError
+                        | Error localError -> return Error localError
+                    elif transportMode = "STANDARDAPISERVER" then
+                        let! serverResult = sendStandardServerCommandAsync ()
+                        match serverResult with
+                        | Ok _ ->
+                            return
+                                Ok
+                                    {
+                                        RequestedValue = requestedValue
+                                        SafeValue = safeValue
+                                        DryRun = false
+                                        CorrelationId = correlationId
+                                        SocketConnected = false
+                                    }
+                        | Error serverError -> return Error serverError
+                    else
+                        let! connected = this.EnsureConnectedAsync ct
+
+                        match connected with
+                        | Error error ->
+                            if config.LocalApi.EnableCommandFallback || transportMode = "AUTO" then
+                                logger.Warn(
+                                    "lovense.socket.fallback_to_local",
+                                    "Lovense Socket API connection failed; trying Local API command fallback.",
+                                    {|
+                                        correlationId = correlationId
+                                        socketError = string error
+                                        localDomain = session.LatestDeviceInfo |> Option.bind (fun info -> info.Domain) |> Option.orElse config.LocalApi.Domain
+                                        localHttpsPort = session.LatestDeviceInfo |> Option.bind (fun info -> info.HttpsPort) |> Option.orElse config.LocalApi.HttpsPort
+                                        action = actionString
+                                    |}
+                                )
+
+                                let! localResult = sendLocalCommandAsync ()
+
+                                match localResult with
+                                | Ok _ ->
+                                    return
+                                        Ok
+                                            {
+                                                RequestedValue = requestedValue
+                                                SafeValue = safeValue
+                                                DryRun = false
+                                                CorrelationId = correlationId
+                                                SocketConnected = false
+                                            }
+                                | Error localError when config.StandardApi.UseServerCommandFallback && transportMode = "AUTO" ->
+                                    let! serverResult = sendStandardServerCommandAsync ()
+                                    match serverResult with
+                                    | Ok _ ->
+                                        return
+                                            Ok
+                                                {
+                                                    RequestedValue = requestedValue
+                                                    SafeValue = safeValue
+                                                    DryRun = false
+                                                    CorrelationId = correlationId
+                                                    SocketConnected = false
+                                                }
+                                    | Error serverError -> return Error serverError
+                                | Error localError ->
+                                    return Error localError
+                            else
+                                return Error(NotConnected error)
+
+                        | Ok _ ->
+                            match session.Socket with
+                            | None ->
+                                return Error(NotConnected(SocketDisconnected "Socket was not available after successful connection."))
+
+                            | Some client when not client.Connected ->
+                                return Error(NotConnected(SocketDisconnected "Socket disconnected before command emit."))
+
+                            | Some client ->
+                                logger.Info(
+                                    "lovense.command.emit",
+                                    "Emitting Lovense Socket API toy command.",
+                                    {|
+                                        correlationId = correlationId
+                                        requestedValue = requestedValue
+                                        safeValue = safeValue
+                                        eventName = Constants.Lovense.SendToyCommandEmit
+                                        action = actionString
+                                        candidateAction = candidateActionString
+                                        finalAction = actionString
+                                        payloadAction = actionString
+                                        droppedActions = droppedActions
+                                        finalActions = capabilityResolution.FinalActions
+                                        stereoApplied = capabilityResolution.StereoApplied
+                                        stereoFallbackApplied = capabilityResolution.StereoFallbackApplied
+                                        reasons = commandReasons
+                                        capabilitySource = capabilitySource
+                                        ruleMapping = mappingSummary
+                                        payloadLength = payload.Length
+                                        rawLogged = logger.IsRawLovenseEnabled
+                                    |}
+                                )
+
+                                let! emitResult =
+                                    Transport.emitJsonAsync
+                                        client
+                                        logger
+                                        Constants.Lovense.SendToyCommandEmit
+                                        payload
+                                        config.CommandAckTimeoutMs
+                                        ct
+
+                                match emitResult with
+                                | Error error ->
+                                    return Error error
+                                | Ok _ ->
+                                    return
+                                        Ok
+                                            {
+                                                RequestedValue = requestedValue
+                                                SafeValue = safeValue
+                                                DryRun = false
+                                                CorrelationId = correlationId
+                                                SocketConnected = client.Connected
+                                            }
             }
 
     member this.SendVibrateAsync(value: int, ct: CancellationToken) =
@@ -555,3 +763,4 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
             connectGate.Dispose()
             http.Dispose()
             localHttp.Dispose()
+            standardCallbackServer |> Option.iter (fun server -> server.Stop())

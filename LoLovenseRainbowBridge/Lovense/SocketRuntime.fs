@@ -121,7 +121,7 @@ module SocketRuntime =
                 "lovense.socket.connected",
                 "Connected to Lovense Socket.IO.",
                 {|
-                    socketIoUrl = info.SocketIoUrl
+                    socketIoUrl = Shared.redactUrlSecrets info.SocketIoUrl
                     socketIoPath = info.SocketIoPath
                     socketId = client.Id
                     socketIoVersion = Constants.Lovense.SocketIoVersion
