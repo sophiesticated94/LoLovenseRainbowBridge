@@ -6,6 +6,7 @@ open System.Threading.Tasks
 open System.Globalization
 open Microsoft.Extensions.DependencyInjection
 open LoLovenseRainbowBridge.App
+open LoLovenseRainbowBridge.App.Jobs
 open LoLovenseRainbowBridge.Bridge.Scoring
 open LoLovenseRainbowBridge.LeagueOfLegends
 open LoLovenseRainbowBridge.Lovense
@@ -156,7 +157,7 @@ module Program =
             use leagueClient = new LeagueLiveClient(config.League.BaseUrl, logger)
             use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger)
             lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult()
-            let runtimeCache = Runtime.RuntimeStateCache()
+            let runtimeCache = RuntimeState.RuntimeStateCache()
             use serviceProvider =
                 ServiceCollection()
                     .AddSingleton<IRuleExpressionEvaluator, RuleExpressionEvaluator>()
@@ -167,11 +168,11 @@ module Program =
                     .BuildServiceProvider()
 
             let commandBuilder = serviceProvider.GetRequiredService<ILovenseCommandValueBuilder>()
-            let jobs : Runtime.IAppJob list =
+            let jobs : IAppJob list =
                 [
-                    Runtime.LeagueCacheJob(config.Runtime, config.Scoring, leagueClient, runtimeCache, logger) :> Runtime.IAppJob
-                    Runtime.OcrCacheJob(config.Runtime, config.PositionBasedRotation, runtimeCache, logger) :> Runtime.IAppJob
-                    Runtime.LovenseRuleJob(config.Runtime, config.Scoring, config.Lovense, lovenseClient, commandBuilder, runtimeCache, logger, recorder, (configSummary config)) :> Runtime.IAppJob
+                    LeagueCacheJob(config.Runtime, config.Scoring, leagueClient, runtimeCache, logger) :> IAppJob
+                    OcrCacheJob(config.Runtime, config.PositionBasedRotation, runtimeCache, logger) :> IAppJob
+                    LovenseRuleJob(config.Runtime, config.Scoring, config.Lovense, lovenseClient, commandBuilder, runtimeCache, logger, recorder, (configSummary config)) :> IAppJob
                 ]
 
             printfn "LoL → Lovense job runtime started."

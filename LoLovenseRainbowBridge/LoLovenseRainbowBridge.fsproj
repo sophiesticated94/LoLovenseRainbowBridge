@@ -64,7 +64,11 @@
     <Compile Include="MinimapDetector\MinimapDetector.fs" />
     <Compile Include="PositionMapping\PositionMapping.fs" />
 
-    <Compile Include="App\Runtime.fs" />
+    <Compile Include="App\RuntimeState.fs" />
+    <Compile Include="App\Orchestrator.fs" />
+    <Compile Include="App\Jobs\LeagueJob.fs" />
+    <Compile Include="App\Jobs\OcrJob.fs" />
+    <Compile Include="App\Jobs\LovenseJob.fs" />
 
     <Compile Include="Program.fs" />
   </ItemGroup>
