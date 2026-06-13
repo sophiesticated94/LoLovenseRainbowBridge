@@ -79,7 +79,7 @@ module Program =
 
     [<EntryPoint>]
     let main args =
-        let baseConfig = Configuration.load ()
+        let baseConfig = Loader.load ()
         let config =
             if hasFlag "--dry-run" args then
                 { baseConfig with Lovense = { baseConfig.Lovense with DryRun = true } }

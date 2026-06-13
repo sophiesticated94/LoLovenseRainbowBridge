@@ -33,7 +33,9 @@
   <ItemGroup>
     <Compile Include="Constants.fs" />
     <Compile Include="Shared.fs" />
-    <Compile Include="Configuration.fs" />
+    <Compile Include="Configuration\Types.fs" />
+    <Compile Include="Configuration\Validation.fs" />
+    <Compile Include="Configuration\Loader.fs" />
     <Compile Include="Logging.fs" />
 
     <Compile Include="Bridge\Domain.fs" />

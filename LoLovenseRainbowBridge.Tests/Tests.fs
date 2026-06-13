@@ -1632,7 +1632,7 @@ let ``rule command builder applies minimap stereo position modulation`` () =
 
 [<Fact>]
 let ``default configuration enables position rotation`` () =
-    let config = Configuration.load ()
+    let config = Loader.load ()
 
     Assert.True(config.PositionBasedRotation.Enable)
     Assert.Equal("Combined", config.PositionBasedRotation.MappingMode)
