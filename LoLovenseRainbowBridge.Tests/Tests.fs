@@ -154,11 +154,10 @@ let loggingConfig directory =
         RawLogPrettyPrint = false
     }
 
-let functionProfile name inheritFrom enabled =
+let functionProfile name enabled =
     {
         FunctionName = name
         Enabled = enabled
-        InheritFrom = inheritFrom
         MinOutput = 0
         MaxOutput = if name = "Pump" || name = "Depth" then 3 elif name = "Stroke" then 100 else 20
         BaseWeight = 1.0
@@ -168,23 +167,36 @@ let functionProfile name inheritFrom enabled =
         Smoothing = 0.0
     }
 
-let rule name kind target sourceFunction source operation value stateSlot trigger whenValue =
+let functionTarget functionName layer operation expression =
+    {
+        FunctionName = functionName
+        StateSlot = ""
+        Layer = layer
+        Operation = operation
+        Expression = expression
+        When = ""
+        DurationSec = 0.0
+    }
+
+let stateTarget stateSlot operation expression =
+    {
+        FunctionName = ""
+        StateSlot = stateSlot
+        Layer = "State"
+        Operation = operation
+        Expression = expression
+        When = ""
+        DurationSec = 0.0
+    }
+
+let rule name kind trigger whenValue targets =
     {
         Name = name
         Kind = kind
         Enabled = true
-        TargetFunction = target
-        SourceFunction = sourceFunction
-        Source = source
-        Operation = operation
-        Value = value
-        DurationSec = 0.0
-        StateSlot = stateSlot
         Trigger = trigger
         When = whenValue
-        Layer = ""
-        Min = 0.0
-        Max = 20.0
+        TargetFunctions = targets
     }
 
 let ruleEngineLovenseConfig =
@@ -195,24 +207,50 @@ let ruleEngineLovenseConfig =
                     lovenseConfig.Mapping with
                         FunctionProfiles =
                             [
-                                functionProfile "Vibrate" "" true
-                                functionProfile "Vibrate1" "Vibrate" true
-                                functionProfile "Vibrate2" "Vibrate" true
-                                functionProfile "All" "" true
+                                functionProfile "Vibrate" true
+                                functionProfile "Vibrate1" true
+                                functionProfile "Vibrate2" true
+                                functionProfile "All" true
                             ]
                         Rules =
                             [
-                                rule "base" "BaseModifier" "Vibrate" "" "Breakdown.BaseIntensity" "Set" 1.0 "" "" ""
-                                rule "track-max" "ThresholdModifier" "" "" "FunctionBase:Vibrate" "TrackMax" 1.0 "MaxBaseThisIncarnation" "" ""
-                                rule "floor" "ThresholdModifier" "" "" "State.MaxBaseThisIncarnation" "Multiply" 0.5 "MinBaseThisIncarnation" "" ""
-                                rule "clamp-floor" "ThresholdModifier" "Vibrate" "" "State.MinBaseThisIncarnation" "ClampMin" 1.0 "" "" ""
-                                rule "inherit-left" "FunctionInheritance" "Vibrate1" "Vibrate" "" "Set" 1.0 "" "" ""
-                                rule "inherit-right" "FunctionInheritance" "Vibrate2" "Vibrate" "" "Set" 1.0 "" "" ""
-                                rule "top-left-left" "PositionModulation" "Vibrate1" "" "" "MultiplyInherited" 1.35 "" "" "TopLeft"
-                                rule "top-left-right" "PositionModulation" "Vibrate2" "" "" "MultiplyInherited" 0.35 "" "" "TopLeft"
-                                rule "kill-all" "TimedContribution" "All" "" "TemporaryEffect.KillPulseEffect" "Add" 1.0 "" "" ""
+                                rule "base" "BaseModifier" "" "" [
+                                    functionTarget "Vibrate" "Base" "Set" "Kills"
+                                    functionTarget "Vibrate1" "Base" "Set" "Kills * PositionLeftWeight"
+                                    functionTarget "Vibrate2" "Base" "Set" "Kills * PositionRightWeight"
+                                ]
+                                rule "track-max" "ThresholdModifier" "" "" [
+                                    stateTarget "MaxBaseThisIncarnation" "TrackMax" "FunctionBase_Vibrate"
+                                ]
+                                rule "floor" "ThresholdModifier" "" "" [
+                                    stateTarget "MinBaseThisIncarnation" "TrackMax" "MaxBaseThisIncarnation * 0.5"
+                                ]
+                                rule "clamp-floor" "ThresholdModifier" "" "" [
+                                    functionTarget "Vibrate" "Base" "ClampMin" "MinBaseThisIncarnation"
+                                ]
+                                rule "multikill-growth" "BaseModifier" "ActiveMultikill" "" [
+                                    functionTarget "Vibrate" "Base" "Add" "MultikillCount^2 - (MultikillCount - 1)^2"
+                                ]
+                                rule "kill-all" "TimedContribution" "ActiveKill" "" [
+                                    functionTarget "All" "Timed" "Add" "ActiveKillCount"
+                                ]
                             ]
                 }
+    }
+
+let ruleInterpreter () =
+    LovenseRuleInterpreter(RuleInputBuilder(scoringConfig), RuleExpressionEvaluator())
+
+let emptyBuilderState =
+    {
+        CurrentIncarnationId = 1
+        PreviousIncarnationBase = 0.0
+        CurrentBase = 0.0
+        MaxBaseThisIncarnation = 0.0
+        MinBaseThisIncarnation = 0.0
+        Variables = Map.empty
+        LastFunctionState = LovenseActionCodec.emptyState
+        LastActionString = None
     }
 
 let testAssetPath fileName =
@@ -675,119 +713,93 @@ let ``lovense live socket api e2e can fetch device info and send guarded command
             |> ignore
 
 [<Fact>]
-let ``live health multiplier interpolates for arbitrary HP`` () =
-    Assert.Equal(0.5, LiveHealthMultiplierCalculator.compute scoringConfig (Some 0.0), 6)
-    Assert.Equal(0.625, LiveHealthMultiplierCalculator.compute scoringConfig (Some 0.25), 6)
-    Assert.Equal(0.75, LiveHealthMultiplierCalculator.compute scoringConfig (Some 0.5), 6)
-    Assert.Equal(0.875, LiveHealthMultiplierCalculator.compute scoringConfig (Some 0.75), 6)
-    Assert.Equal(1.0, LiveHealthMultiplierCalculator.compute scoringConfig (Some 1.0), 6)
-
-[<Fact>]
-let ``heartbeat amplitude follows missing health in zero to six range`` () =
-    Assert.Equal(0.0, TemporaryPulseCalculator.HeartbeatCalculator.amplitude scoringConfig 1.0, 6)
-    Assert.Equal(1.5, TemporaryPulseCalculator.HeartbeatCalculator.amplitude scoringConfig 0.75, 6)
-    Assert.Equal(3.0, TemporaryPulseCalculator.HeartbeatCalculator.amplitude scoringConfig 0.5, 6)
-    Assert.Equal(4.5, TemporaryPulseCalculator.HeartbeatCalculator.amplitude scoringConfig 0.25, 6)
-    Assert.Equal(6.0, TemporaryPulseCalculator.HeartbeatCalculator.amplitude scoringConfig 0.0, 6)
-
-[<Fact>]
-let ``heartbeat pulse shape stays near zero most of cycle and peaks briefly`` () =
-    let quiet = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape scoringConfig 1000.10
-    let rising = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape scoringConfig 1000.75
-    let peak = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape scoringConfig 1000.78
-    let falling = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape scoringConfig 1000.90
-    let ended = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape scoringConfig 1000.99
-
-    Assert.Equal(0.0, quiet, 6)
-    Assert.InRange(rising, 0.01, 0.99)
-    Assert.Equal(1.0, peak, 6)
-    Assert.InRange(falling, 0.01, 0.99)
-    Assert.Equal(0.0, ended, 6)
-    Assert.True(rising > falling)
-
-[<Fact>]
-let ``low health heartbeat adds stronger positive pulse to final intensity`` () =
-    let lowHpPeak = computeIntensityBreakdown scoringConfig (snapshotAt 1000.78 (Some(100.0, 1000.0)) []) initialState
-    let higherHpPeak = computeIntensityBreakdown scoringConfig (snapshotAt 1000.78 (Some(250.0, 1000.0)) []) initialState
-    let lowHpQuiet = computeIntensityBreakdown scoringConfig (snapshotAt 1000.10 (Some(100.0, 1000.0)) []) initialState
-
-    let heartbeatValue breakdown =
-        breakdown.TemporaryEffects
-        |> List.tryFind (fun effect -> effect.Kind = HeartbeatNearDeathEffect)
-        |> Option.map (fun effect -> effect.Value)
-        |> Option.defaultValue 0
-
-    Assert.Equal(5, heartbeatValue lowHpPeak)
-    Assert.Equal(4, heartbeatValue higherHpPeak)
-    Assert.Equal(0, heartbeatValue lowHpQuiet)
-    Assert.True(lowHpPeak.Intensity > lowHpQuiet.Intensity)
-
-[<Fact>]
-let ``death pressure activates on death and reduces base`` () =
-    let initial = initialState.HealthPressure
-    let afterDeath = HealthPressureCalculator.handleDeath scoringConfig 100.0 initial
-
-    Assert.True(afterDeath.DeathPressureActive)
-    Assert.Equal(Some 100.0, afterDeath.DeathPressureStartTime)
-    Assert.Equal(Some 1.0, afterDeath.BaseBeforeDeath)
-    Assert.Equal(0.5, afterDeath.PressureMultiplier, 6)
-
-[<Fact>]
-let ``kill during death pressure recovers original base`` () =
-    let initial = initialState.HealthPressure
-    let afterDeath = HealthPressureCalculator.handleDeath scoringConfig 100.0 initial
-    let afterKill = HealthPressureCalculator.handleKillDuringPressure afterDeath
-
-    Assert.False(afterKill.DeathPressureActive)
-    Assert.Equal(None, afterKill.DeathPressureStartTime)
-    Assert.Equal(None, afterKill.BaseBeforeDeath)
-    Assert.Equal(1.0, afterKill.PressureMultiplier, 6)
-
-[<Fact>]
-let ``death pressure window expiry applies additional loss`` () =
-    let initial = initialState.HealthPressure
-    let afterDeath = HealthPressureCalculator.handleDeath scoringConfig 100.0 initial
-    let afterExpiry = HealthPressureCalculator.checkPressureWindowExpiry scoringConfig 170.0 afterDeath
-
-    Assert.False(afterExpiry.DeathPressureActive)
-    Assert.Equal(None, afterExpiry.DeathPressureStartTime)
-    Assert.Equal(None, afterExpiry.BaseBeforeDeath)
-    Assert.Equal(0.25, afterExpiry.PressureMultiplier, 6)
-
-[<Fact>]
-let ``hp change threshold resets base when exceeded`` () =
-    let initial = initialState.HealthPressure
-    let withInitialHp = HealthPressureCalculator.update scoringConfig 0.0 (Some 1.0) initial
-    let withHpChange = HealthPressureCalculator.update scoringConfig 0.0 (Some 0.8) withInitialHp
-
-    Assert.Equal(0.86, withHpChange.PressureMultiplier, 6)
-
-[<Fact>]
-let ``base recovery interpolates correctly`` () =
-    Assert.Equal(0.5, HealthPressureCalculator.calculateBaseRecovery scoringConfig 0.0, 6)
-    Assert.Equal(0.65, HealthPressureCalculator.calculateBaseRecovery scoringConfig 0.25, 6)
-    Assert.Equal(0.8, HealthPressureCalculator.calculateBaseRecovery scoringConfig 0.5, 6)
-    Assert.Equal(0.85, HealthPressureCalculator.calculateBaseRecovery scoringConfig 0.75, 6)
-    Assert.Equal(0.8, HealthPressureCalculator.calculateBaseRecovery scoringConfig 1.0, 6)
-
-[<Fact>]
-let ``base intensity caps at eighteen while temporary effects can reach twenty`` () =
-    let dragon : BridgeEvent =
+let ``rule input builder exposes live health and heartbeat variables`` () =
+    let input =
         {
-            EventId = 10
-            GameTime = 998.0
-            ActorName = Some "Active#EUW"
-            VictimName = None
-            Assisters = []
-            Kind = ObjectiveKill(Dragon(Some "Elder"), Some true)
+            PreviousState = initialState
+            Snapshot = snapshotAt 1000.78 (Some(100.0, 1000.0)) []
+            EvolvedState = initialState
+            Position = None
+            Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
         }
 
-    let state = { initialState with MultikillCount = 30 }
-    let breakdown = computeIntensityBreakdown scoringConfig (snapshot (Some(1000.0, 1000.0)) [ dragon ]) state
+    let variables = (RuleInputBuilder(scoringConfig) :> IRuleInputBuilder).Build emptyBuilderState input Map.empty
 
-    Assert.True(breakdown.BaseIntensity <= 18)
-    Assert.True(breakdown.TemporaryBoost > 0)
-    Assert.Equal(20, breakdown.Intensity)
+    Assert.Equal(0.1, variables["HealthPercent"], 6)
+    Assert.Equal(0.55, variables["LiveHealthMultiplier"], 6)
+    Assert.InRange(variables["HeartbeatPulseValue"], 5.0, 6.0)
+
+[<Fact>]
+let ``ncalc expression evaluator reads state variables`` () =
+    let evaluator = RuleExpressionEvaluator() :> IRuleExpressionEvaluator
+
+    match evaluator.Evaluate "MultikillCount^2 - (MultikillCount - 1)^2" (Map.ofList [ "MultikillCount", 3.0 ]) with
+    | Ok value -> Assert.Equal(5.0, value, 6)
+    | Error error -> failwithf "Expected expression success, got %s" error
+
+[<Fact>]
+let ``rule command builder applies heartbeat as effect without mutating base`` () =
+    let heartbeatConfig =
+        {
+            ruleEngineLovenseConfig with
+                Mapping =
+                    {
+                        ruleEngineLovenseConfig.Mapping with
+                            Rules =
+                                [
+                                    rule "base" "BaseModifier" "" "" [
+                                        functionTarget "Vibrate" "Base" "Set" "10"
+                                    ]
+                                    rule "heartbeat" "Effect" "" "HealthPercent <= 0.30" [
+                                        functionTarget "Vibrate" "Effect" "Add" "HeartbeatPulseValue"
+                                    ]
+                                ]
+                    }
+        }
+
+    let builder = LovenseCommandBuilder(heartbeatConfig, ruleInterpreter()) :> ILovenseCommandBuilder
+    let frame =
+        builder.Build
+            {
+                PreviousState = initialState
+                Snapshot = snapshotAt 1000.78 (Some(100.0, 1000.0)) []
+                EvolvedState = initialState
+                Position = None
+                Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+            }
+
+    let vibrate = frame.FunctionStates[Vibrate]
+
+    Assert.Equal(10.0, vibrate.Base, 6)
+    Assert.True(vibrate.Effect > 0.0)
+    Assert.True(vibrate.Final > 10)
+
+[<Fact>]
+let ``multikill expression grows by odd deltas`` () =
+    let event streak =
+        {
+            EventId = streak
+            GameTime = 999.0
+            ActorName = Some "Active#EUW"
+            VictimName = Some "Other#EUW"
+            Assisters = []
+            Kind = Multikill streak
+        }
+
+    let build streak =
+        let builder = LovenseCommandBuilder(ruleEngineLovenseConfig, ruleInterpreter()) :> ILovenseCommandBuilder
+        builder.Build
+            {
+                PreviousState = initialState
+                Snapshot = { snapshot (Some(1000.0, 1000.0)) [ event streak ] with ActivePlayer = { player (Some(1000.0, 1000.0)) with Kills = 0 } }
+                EvolvedState = { initialState with MultikillCount = 1 }
+                Position = None
+                Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+            }
+
+    Assert.Equal(1.0, (build 1).FunctionStates[Vibrate].Base, 6)
+    Assert.Equal(3.0, (build 2).FunctionStates[Vibrate].Base, 6)
+    Assert.Equal(5.0, (build 3).FunctionStates[Vibrate].Base, 6)
 
 [<Fact>]
 let ``parser reads active health and objective event fields`` () =
@@ -1008,32 +1020,16 @@ let ``lovense function ranges clamp protocol values`` () =
 
 [<Fact>]
 let ``rule command builder tracks max base and clamps to incarnation floor`` () =
-    let breakdown baseIntensity =
-        {
-            PerformanceScore = 0.0
-            NormalizedScore = 0.0
-            MultikillBase = 0.0
-            DeathPenalty = 0
-            RawBaseValue = float baseIntensity
-            LiveHealthPercent = Some 1.0
-            LiveHealthMultiplier = 1.0
-            HealthPressureMultiplier = 1.0
-            HealthAdjustedBaseValue = float baseIntensity
-            BaseIntensity = baseIntensity
-            TemporaryBoost = 0
-            TemporaryEffects = []
-            RawFinalValue = float baseIntensity
-            Intensity = baseIntensity
-        }
-
-    let builder = LovenseCommandBuilder(ruleEngineLovenseConfig, LovenseRuleInterpreter()) :> ILovenseCommandBuilder
+    let builder = LovenseCommandBuilder(ruleEngineLovenseConfig, ruleInterpreter()) :> ILovenseCommandBuilder
     let build baseIntensity =
+        let baseSnapshot = snapshot (Some(1000.0, 1000.0)) []
+        let active = { baseSnapshot.ActivePlayer with Kills = baseIntensity }
+
         builder.Build
             {
                 PreviousState = initialState
-                Snapshot = snapshot (Some(1000.0, 1000.0)) []
+                Snapshot = { baseSnapshot with ActivePlayer = active; Players = [ active ] }
                 EvolvedState = initialState
-                Breakdown = breakdown baseIntensity
                 Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
             }
@@ -1048,32 +1044,15 @@ let ``rule command builder tracks max base and clamps to incarnation floor`` () 
 
 [<Fact>]
 let ``rule command builder applies minimap stereo position modulation`` () =
-    let breakdown =
-        {
-            PerformanceScore = 0.0
-            NormalizedScore = 0.0
-            MultikillBase = 0.0
-            DeathPenalty = 0
-            RawBaseValue = 10.0
-            LiveHealthPercent = Some 1.0
-            LiveHealthMultiplier = 1.0
-            HealthPressureMultiplier = 1.0
-            HealthAdjustedBaseValue = 10.0
-            BaseIntensity = 10
-            TemporaryBoost = 0
-            TemporaryEffects = []
-            RawFinalValue = 10.0
-            Intensity = 10
-        }
-
-    let builder = LovenseCommandBuilder(ruleEngineLovenseConfig, LovenseRuleInterpreter()) :> ILovenseCommandBuilder
+    let builder = LovenseCommandBuilder(ruleEngineLovenseConfig, ruleInterpreter()) :> ILovenseCommandBuilder
+    let baseSnapshot = snapshot (Some(1000.0, 1000.0)) []
+    let active = { baseSnapshot.ActivePlayer with Kills = 10 }
     let frame =
         builder.Build
             {
                 PreviousState = initialState
-                Snapshot = snapshot (Some(1000.0, 1000.0)) []
+                Snapshot = { baseSnapshot with ActivePlayer = active; Players = [ active ] }
                 EvolvedState = initialState
-                Breakdown = breakdown
                 Position =
                     Some
                         {
@@ -1137,8 +1116,7 @@ let ``sqlite recorder opens closes and skips unchanged slices`` () =
     use logger = new StructuredSessionLogger(loggingConfig logDir)
     let recorder = new GameplayRecorder(recordingConfig dbPath, logger)
     let bridgeSnapshot = snapshot (Some(1000.0, 1000.0)) []
-    let state = initialState
-    let breakdown = computeIntensityBreakdown scoringConfig bridgeSnapshot state
+    let breakdown = { emptyBreakdown with Intensity = 10; BaseIntensity = 10; RawFinalValue = 10.0 }
     let plan = Mapping.simpleVibratePlan lovenseConfig breakdown.Intensity
     let action = LovenseActionCodec.planActionString plan
     let now = DateTimeOffset.Parse("2026-06-13T10:00:00.0000000+00:00")

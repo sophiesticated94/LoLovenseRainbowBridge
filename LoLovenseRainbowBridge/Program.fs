@@ -145,6 +145,8 @@ module Program =
             use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger)
             use serviceProvider =
                 ServiceCollection()
+                    .AddSingleton<IRuleExpressionEvaluator, RuleExpressionEvaluator>()
+                    .AddSingleton<IRuleInputBuilder>(fun _ -> RuleInputBuilder(config.Scoring) :> IRuleInputBuilder)
                     .AddSingleton<ILovenseRuleInterpreter, LovenseRuleInterpreter>()
                     .AddSingleton<ILovenseCommandBuilder>(fun services ->
                         LovenseCommandBuilder(config.Lovense, services.GetRequiredService<ILovenseRuleInterpreter>()) :> ILovenseCommandBuilder)

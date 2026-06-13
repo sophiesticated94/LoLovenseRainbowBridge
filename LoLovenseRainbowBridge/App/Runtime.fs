@@ -266,8 +266,6 @@ module Runtime =
                         let lolSnapshot = parsed.Snapshot
                         let snapshot = Mapper.toBridgeSnapshot scoringConfig lolSnapshot
                         let evolved = evolve scoringConfig snapshot state |> updateHealthPressure scoringConfig snapshot
-                        let breakdown = computeIntensityBreakdown scoringConfig snapshot evolved
-                        let intensity = breakdown.Intensity
 
                         let planningPosition, positionRotationState =
                             if positionRotationConfig.Enable then
@@ -369,13 +367,14 @@ module Runtime =
                                     PreviousState = state
                                     Snapshot = snapshot
                                     EvolvedState = evolved
-                                    Breakdown = breakdown
                                     Position = planningPosition
                                     Now = now
                                 }
 
                         let commandPlan = commandFrame.Plan
                         let actionString = commandFrame.ActionString
+                        let breakdown = commandFrame.Breakdown
+                        let intensity = breakdown.Intensity
 
                         logger.Info(
                             "runtime.league.success",
@@ -457,11 +456,12 @@ module Runtime =
                                                     baseLayer = layers.Base
                                                     timedLayer = layers.Timed
                                                     effectLayer = layers.Effect
-                                                    inheritedLayer = layers.Inherited
                                                     final = layers.Final
                                                     contributions = layers.Contributions
                                                 |})
                                         stateDiff = commandFrame.StateDiff
+                                        ruleDiagnostics = commandFrame.Diagnostics
+                                        ruleVariables = commandFrame.RuleVariables
                                     |}
                             |}
                         )

@@ -1,0 +1,10 @@
+# Technical Debt Register
+
+| Date | Area | Severity | Status | Description | Suggested Fix |
+| --- | --- | --- | --- | --- | --- |
+| 2026-06-13 | Configuration | Medium | Open | `ScoringConfig` still contains legacy tuning fields used as rule-input defaults and event-window constants. The command math no longer depends on hardcoded domain calculators, but the naming still suggests the old scoring pipeline. | Split it into `RuleInputs`, `EventWindows`, and `GameplayFeatureDefaults`, then migrate config keys with a clear one-time rename. |
+| 2026-06-13 | Recording | Medium | Open | SQLite records still store an `IntensityBreakdown`-shaped summary for compatibility with the existing recording context JSON. | Store command-frame layer summaries directly and keep an optional projection to the old intensity shape for old replays only if needed. |
+| 2026-06-13 | Replay | Medium | Open | Replay reconstructs command plans from action strings instead of full command frames with layer/reason/context metadata. | Record and replay normalized command frames so replay can preserve rules, effects, and capability decisions exactly. |
+| 2026-06-13 | Position Mapping | Low | Open | `PositionBasedRotation.RotationSensitivity` is legacy naming now that minimap position feeds stereo rule variables rather than Lovense `Rotate`. | Rename to `PositionSensitivity` or move it under `PositionBasedRotation.Detector`/`Mapping` after a config migration. |
+| 2026-06-13 | Lovense API | Low | Open | `SendVibrateAsync` remains as a compatibility helper for stop/replay/simple paths, while `SendCommandPlanAsync` is the real command API. | Move all remaining callers to command-frame/plan builders, then remove the compatibility helper. |
+| 2026-06-13 | Rule Engine | Medium | Open | Rule expression failures are collected as frame diagnostics but are not yet surfaced as first-class warning events in `track.log`. | Add structured warning logging for failed rule targets with rule name, target, expression, and available variable names. |

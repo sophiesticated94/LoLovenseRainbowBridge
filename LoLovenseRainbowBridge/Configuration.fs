@@ -64,7 +64,6 @@ and LovenseFunctionProfileConfig =
     {
         FunctionName: string
         Enabled: bool
-        InheritFrom: string
         MinOutput: int
         MaxOutput: int
         BaseWeight: float
@@ -79,18 +78,20 @@ and LovenseRuleConfig =
         Name: string
         Kind: string
         Enabled: bool
-        TargetFunction: string
-        SourceFunction: string
-        Source: string
-        Operation: string
-        Value: float
-        DurationSec: float
-        StateSlot: string
         Trigger: string
         When: string
+        TargetFunctions: LovenseRuleTargetConfig list
+    }
+
+and LovenseRuleTargetConfig =
+    {
+        FunctionName: string
+        StateSlot: string
         Layer: string
-        Min: float
-        Max: float
+        Operation: string
+        Expression: string
+        When: string
+        DurationSec: float
     }
 
 type RuntimeConfig =
@@ -243,6 +244,53 @@ module Configuration =
             | _ -> current)
         |> Option.defaultValue current
 
+    let private sectionString (section: IConfigurationSection) key =
+        let value = section[key]
+        if String.IsNullOrWhiteSpace value then "" else value
+
+    let private sectionBool defaultValue (section: IConfigurationSection) key =
+        let value = section[key]
+        if String.IsNullOrWhiteSpace value then
+            defaultValue
+        else
+            match value with
+            | "1" | "true" | "TRUE" | "True" | "yes" | "YES" -> true
+            | "0" | "false" | "FALSE" | "False" | "no" | "NO" -> false
+            | _ -> defaultValue
+
+    let private sectionFloat defaultValue (section: IConfigurationSection) key =
+        let value = section[key]
+        if String.IsNullOrWhiteSpace value then
+            defaultValue
+        else
+            match Double.TryParse(value, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
+            | true, parsed -> parsed
+            | false, _ -> defaultValue
+
+    let private loadRuleTarget (section: IConfigurationSection) =
+        {
+            FunctionName = sectionString section "FunctionName"
+            StateSlot = sectionString section "StateSlot"
+            Layer = sectionString section "Layer"
+            Operation = sectionString section "Operation"
+            Expression = sectionString section "Expression"
+            When = sectionString section "When"
+            DurationSec = sectionFloat 0.0 section "DurationSec"
+        }
+
+    let private loadRule (section: IConfigurationSection) =
+        {
+            Name = sectionString section "Name"
+            Kind = sectionString section "Kind"
+            Enabled = sectionBool true section "Enabled"
+            Trigger = sectionString section "Trigger"
+            When = sectionString section "When"
+            TargetFunctions =
+                section.GetSection("TargetFunctions").GetChildren()
+                |> Seq.map loadRuleTarget
+                |> Seq.toList
+        }
+
     let private validate config =
         if config.Runtime.PollMs <= 0 then
             invalidArg "Runtime.PollMs" "Runtime.PollMs must be greater than zero."
@@ -324,20 +372,31 @@ module Configuration =
                     "EFFECT"
                     "STATETRANSITION"
                     "CAPABILITYFALLBACK"
-                    "FUNCTIONINHERITANCE"
                     "POSITIONMODULATION"
                 ]
 
         let knownRuleOperations =
-            set [ "SET"; "ADD"; "MULTIPLY"; "TRACKMAX"; "CLAMPMIN"; "STARTINCARNATION"; "MULTIPLYINHERITED" ]
+            set
+                [
+                    "SET"
+                    "ADD"
+                    "SUBTRACT"
+                    "MULTIPLY"
+                    "CLAMPMIN"
+                    "CLAMPMAX"
+                    "TRACKMAX"
+                    "TRACKMIN"
+                    "CLEAR"
+                    "STARTWINDOW"
+                    "STARTINCARNATION"
+                ]
+
+        let knownRuleLayers =
+            set [ "BASE"; "TIMED"; "EFFECT"; "STATE" ]
 
         for profile in config.Lovense.Mapping.FunctionProfiles do
             if not (knownLovenseFunctions.Contains(profile.FunctionName.ToUpperInvariant())) then
                 invalidArg "Lovense.Mapping.FunctionProfiles.FunctionName" $"Unknown Lovense function profile: {profile.FunctionName}"
-
-            if not (String.IsNullOrWhiteSpace profile.InheritFrom)
-               && not (knownLovenseFunctions.Contains(profile.InheritFrom.ToUpperInvariant())) then
-                invalidArg "Lovense.Mapping.FunctionProfiles.InheritFrom" $"Unknown Lovense inherit source: {profile.InheritFrom}"
 
             if profile.MinOutput < 0 || profile.MaxOutput < profile.MinOutput then
                 invalidArg "Lovense.Mapping.FunctionProfiles.Output" $"Invalid output range for {profile.FunctionName}."
@@ -352,16 +411,31 @@ module Configuration =
             if not (knownRuleKinds.Contains(rule.Kind.ToUpperInvariant())) then
                 invalidArg "Lovense.Mapping.Rules.Kind" $"Unknown Lovense rule kind: {rule.Kind}"
 
-            if not (knownRuleOperations.Contains(rule.Operation.ToUpperInvariant())) then
-                invalidArg "Lovense.Mapping.Rules.Operation" $"Unknown Lovense rule operation: {rule.Operation}"
+            let targets =
+                rule.TargetFunctions
+                |> Option.ofObj
+                |> Option.defaultValue []
 
-            if not (String.IsNullOrWhiteSpace rule.TargetFunction)
-               && not (knownLovenseFunctions.Contains(rule.TargetFunction.ToUpperInvariant())) then
-                invalidArg "Lovense.Mapping.Rules.TargetFunction" $"Unknown Lovense rule target function: {rule.TargetFunction}"
+            if targets.IsEmpty then
+                invalidArg "Lovense.Mapping.Rules.TargetFunctions" $"Rule '{rule.Name}' must contain at least one target."
 
-            if not (String.IsNullOrWhiteSpace rule.SourceFunction)
-               && not (knownLovenseFunctions.Contains(rule.SourceFunction.ToUpperInvariant())) then
-                invalidArg "Lovense.Mapping.Rules.SourceFunction" $"Unknown Lovense rule source function: {rule.SourceFunction}"
+            for target in targets do
+                if not (knownRuleOperations.Contains((target.Operation |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant())) then
+                    invalidArg "Lovense.Mapping.Rules.TargetFunctions.Operation" $"Unknown Lovense rule operation in '{rule.Name}': {target.Operation}"
+
+                if not (knownRuleLayers.Contains((target.Layer |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant())) then
+                    invalidArg "Lovense.Mapping.Rules.TargetFunctions.Layer" $"Unknown Lovense rule layer in '{rule.Name}': {target.Layer}"
+
+                if String.Equals(target.Layer, "State", StringComparison.OrdinalIgnoreCase) then
+                    if String.IsNullOrWhiteSpace target.StateSlot then
+                        invalidArg "Lovense.Mapping.Rules.TargetFunctions.StateSlot" $"State target in '{rule.Name}' must declare StateSlot."
+                elif not (knownLovenseFunctions.Contains((target.FunctionName |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant())) then
+                    invalidArg "Lovense.Mapping.Rules.TargetFunctions.FunctionName" $"Unknown Lovense rule target function in '{rule.Name}': {target.FunctionName}"
+
+                if String.IsNullOrWhiteSpace target.Expression
+                   && not (String.Equals(target.Operation, "Clear", StringComparison.OrdinalIgnoreCase)
+                           || String.Equals(target.Operation, "StartIncarnation", StringComparison.OrdinalIgnoreCase)) then
+                    invalidArg "Lovense.Mapping.Rules.TargetFunctions.Expression" $"Rule target in '{rule.Name}' must declare Expression."
 
         if config.Scoring.MinIntensity > config.Scoring.MaxIntensity then
             invalidArg "Scoring.MinIntensity" "Scoring.MinIntensity cannot be greater than Scoring.MaxIntensity."
@@ -539,10 +613,9 @@ module Configuration =
                                 |> Option.map Array.toList
                                 |> Option.defaultValue []
                             Rules =
-                                root.GetSection("Lovense:Mapping:Rules").Get<LovenseRuleConfig[]>()
-                                |> Option.ofObj
-                                |> Option.map Array.toList
-                                |> Option.defaultValue []
+                                root.GetSection("Lovense:Mapping:Rules").GetChildren()
+                                |> Seq.map loadRule
+                                |> Seq.toList
                         }
                 }
 

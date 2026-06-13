@@ -172,7 +172,6 @@ The bridge can run in two Lovense mapping modes:
       {
         "FunctionName": "Vibrate",
         "Enabled": true,
-        "InheritFrom": "",
         "MinOutput": 0,
         "MaxOutput": 20,
         "BaseWeight": 1.0,
@@ -184,12 +183,29 @@ The bridge can run in two Lovense mapping modes:
     ],
     "Rules": [
       {
-        "Name": "vibrate-base-from-current-game-state",
+        "Name": "multikill-square-growth",
         "Kind": "BaseModifier",
-        "TargetFunction": "Vibrate",
-        "Source": "Breakdown.BaseIntensity",
-        "Operation": "Set",
-        "Value": 1.0
+        "Trigger": "ActiveMultikill",
+        "TargetFunctions": [
+          {
+            "FunctionName": "Vibrate",
+            "Layer": "Base",
+            "Operation": "Add",
+            "Expression": "MultikillCount^2 - (MultikillCount - 1)^2"
+          },
+          {
+            "FunctionName": "Vibrate1",
+            "Layer": "Base",
+            "Operation": "Add",
+            "Expression": "(MultikillCount^2 - (MultikillCount - 1)^2) * PositionLeftWeight"
+          },
+          {
+            "FunctionName": "Vibrate2",
+            "Layer": "Base",
+            "Operation": "Add",
+            "Expression": "(MultikillCount^2 - (MultikillCount - 1)^2) * PositionRightWeight"
+          }
+        ]
       }
     ]
   }
@@ -201,9 +217,10 @@ The bridge can run in two Lovense mapping modes:
 `MultiFunction` builds richer Lovense Function actions from the LoL state through
 the configurable rule engine:
 
-- calculators produce stable inputs such as base intensity, health pressure, heartbeat pulse, temporary effects, and minimap context
-- rules transform those inputs into per-function layers: base, timed, effect, inherited, and final
-- `Vibrate1` and `Vibrate2` inherit the current resolved `Vibrate` value by default, then position rules can reshape the two channels
+- the rule input builder exposes raw LoL stats, detected events, calculated helper variables, previous command values, and minimap context
+- rules transform those inputs into per-function layers: base, timed, effect, and final
+- one rule can update many functions through `TargetFunctions`, so `Vibrate`, `Vibrate1`, and `Vibrate2` can share the same idea but use different expressions
+- expressions are evaluated by NCalc; the bridge also accepts natural power syntax such as `MultikillCount^2`
 - command builder memory tracks incarnation thresholds, max base reached this incarnation, last function state, and diffs
 - unsupported Lovense functions are filtered from the final command plan when capabilities are known
 
@@ -213,10 +230,10 @@ by default because Lovense documents that `Stroke` should be paired with
 `Thrusting` and needs a meaningful range.
 
 Rule kinds are finite and typed: `BaseModifier`, `ThresholdModifier`,
-`TimedContribution`, `Effect`, `StateTransition`, `CapabilityFallback`,
-`FunctionInheritance`, and `PositionModulation`. This is intentionally not a
-general scripting language; bad function names, rule kinds, operations, and
-output ranges are validated at startup.
+`TimedContribution`, `Effect`, `StateTransition`, `CapabilityFallback`, and
+`PositionModulation`. This is intentionally not a general scripting language;
+bad function names, layers, operations, expressions, and output ranges are
+validated at startup.
 
 Canonical Lovense protocol ranges are code-owned:
 
@@ -229,8 +246,8 @@ Stop = command-only
 ```
 
 Function profiles are behavior policy over those ranges. They can enable a
-function, inherit from another function, apply layer weights, clamp output, and
-choose a simple curve. They do not define protocol ranges.
+function, apply layer weights, clamp output, and choose a simple curve. They do
+not define protocol ranges; protocol min/max values remain code-owned.
 
 ## Toy capabilities and stereo vibration
 
