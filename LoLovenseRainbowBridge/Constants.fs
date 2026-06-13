@@ -8,6 +8,9 @@ module Constants =
 
     module Lovense =
         [<Literal>]
+        let GetToken = "https://api.lovense-api.com/api/basicApi/getToken"
+
+        [<Literal>]
         let GetSocketUrl = "https://api.lovense-api.com/api/basicApi/getSocketUrl"
 
         [<Literal>]
@@ -78,6 +81,18 @@ module Constants =
 
         [<Literal>]
         let AuthTokenField = "authToken"
+
+        [<Literal>]
+        let DeveloperTokenField = "token"
+
+        [<Literal>]
+        let UserIdField = "uid"
+
+        [<Literal>]
+        let UserNameField = "uname"
+
+        [<Literal>]
+        let UserTokenField = "utoken"
 
         [<Literal>]
         let CodeField = "code"

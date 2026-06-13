@@ -11,6 +11,7 @@ open LoLovenseRainbowBridge.Bridge.Scoring
 open LoLovenseRainbowBridge.LeagueOfLegends
 open LoLovenseRainbowBridge.Lovense
 open LoLovenseRainbowBridge.MinimapDetector
+open LoLovenseRainbowBridge.Recording
 open LoLovenseRainbowBridge.ScreenCapture
 open Xunit
 
@@ -65,6 +66,14 @@ let lovenseConfig =
         AuthToken = None
         ToyId = None
         Platform = "tests"
+        Developer =
+            {
+                Token = None
+                UserId = None
+                UserName = None
+                UserEmail = None
+                UserToken = None
+            }
         CommandTimeSec = 2.0
         DryRun = true
         ConnectTimeoutMs = 1000
@@ -85,6 +94,24 @@ let lovenseConfig =
                 DepthMax = 3
                 StrokeMax = 100
             }
+    }
+
+let recordingConfig databasePath =
+    {
+        Enabled = true
+        DatabasePath = databasePath
+        SliceMs = 100
+        RecordRawContext = false
+    }
+
+let loggingConfig directory =
+    {
+        BaseDirectory = directory
+        SessionDirectoryFormat = "yyyy-MM-dd_HH-mm-ss_fffffff"
+        TrackLogLevel = "Trace"
+        LogRawLeague = false
+        LogRawLovense = false
+        RawLogPrettyPrint = false
     }
 
 let testAssetPath fileName =
@@ -119,6 +146,9 @@ let snapshot health events : BridgeSnapshot =
         Players = [ active; { active with Id = "other"; Aliases = [ "Other#EUW" ]; Kills = 0; Assists = 0; CreepScore = 10; Level = 1 } ]
         Events = events
     }
+
+let tempPath fileName =
+    Path.Combine(Path.GetTempPath(), "LoLovenseRainbowBridge.Tests", Guid.NewGuid().ToString("N"), fileName)
 
 [<Fact>]
 let ``live health multiplier interpolates for arbitrary HP`` () =
@@ -265,6 +295,65 @@ let ``default configuration enables position rotation`` () =
     Assert.Equal("Combined", config.PositionBasedRotation.MappingMode)
     Assert.Equal(None, config.PositionBasedRotation.TemplateImagePath)
     Assert.False(config.PositionBasedRotation.DebugMode)
+    Assert.True(config.Recording.Enabled)
+    Assert.Equal("data/gameplay.sqlite", config.Recording.DatabasePath.Replace('\\', '/'))
+    Assert.Equal(100, config.Recording.SliceMs)
+
+[<Fact>]
+let ``lovense action string parses to normalized function state`` () =
+    let state = LovenseActionCodec.stateFromActionString "Vibrate:10,Rotate:7,Pump:3,Stroke:0-80"
+
+    Assert.Equal(10, state["Vibrate"])
+    Assert.Equal(7, state["Rotate"])
+    Assert.Equal(3, state["Pump"])
+    Assert.Equal(80, state["Stroke"])
+    Assert.Equal(0, state["Stop"])
+
+[<Fact>]
+let ``lovense state diff includes only changed functions`` () =
+    let previous = LovenseActionCodec.stateFromActionString "Vibrate:10,Rotate:7"
+    let current = LovenseActionCodec.stateFromActionString "Vibrate:10,Rotate:9,All:4"
+    let diff = LovenseActionCodec.diff previous current |> Map.ofList
+
+    Assert.False(diff.ContainsKey("Vibrate"))
+    Assert.Equal(9, diff["Rotate"])
+    Assert.Equal(4, diff["All"])
+
+[<Fact>]
+let ``sqlite recorder opens closes and skips unchanged slices`` () =
+    let dbPath = tempPath "gameplay.sqlite"
+    let logDir = Path.Combine(Path.GetDirectoryName dbPath, "log")
+    use logger = new StructuredSessionLogger(loggingConfig logDir)
+    let recorder = new GameplayRecorder(recordingConfig dbPath, logger)
+    let bridgeSnapshot = snapshot (Some(1000.0, 1000.0)) []
+    let state = initialState
+    let breakdown = computeIntensityBreakdown scoringConfig bridgeSnapshot state
+    let plan = Mapping.simpleVibratePlan lovenseConfig breakdown.Intensity
+    let action = Mapping.planActionString plan
+    let now = DateTimeOffset.Parse("2026-06-13T10:00:00.0000000+00:00")
+    let configSummary = {| test = true |}
+
+    recorder.RecordPlan(now, configSummary, bridgeSnapshot, breakdown, plan, action, { Attempted = false; Success = None; Error = None })
+    recorder.RecordPlan(now.AddMilliseconds(100.0), configSummary, bridgeSnapshot, breakdown, plan, action, { Attempted = false; Success = None; Error = None })
+    recorder.CloseActiveGame(now.AddSeconds(1.0))
+
+    let games = recorder.ListGames()
+    Assert.Single(games) |> ignore
+    Assert.True(games.Head.EndedAt.IsSome)
+
+    let records = recorder.ReadRecords(games.Head.GameId)
+    Assert.Single(records) |> ignore
+    let context = JsonNode.Parse(records.Head.ContextDiffJson)
+    Assert.Equal(action, context["action"].GetValue<string>())
+    Assert.NotNull(context["functions"])
+
+[<Fact>]
+let ``replay can reconstruct command plan from recorded action`` () =
+    let plan = LovenseActionCodec.planFromActionString lovenseConfig "Vibrate:11,Rotate:4,All:12"
+    let action = Mapping.planActionString plan
+
+    Assert.Equal("Vibrate:11,Rotate:4,All:12", action)
+    Assert.Equal(3, plan.Actions.Length)
 
 [<Fact>]
 let ``minimap detection uses real screenshot fixture template`` () =

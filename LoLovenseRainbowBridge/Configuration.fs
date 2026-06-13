@@ -13,11 +13,21 @@ type LovenseConfig =
         AuthToken: string option
         ToyId: string option
         Platform: string
+        Developer: LovenseDeveloperConfig
         CommandTimeSec: float
         DryRun: bool
         ConnectTimeoutMs: int
         CommandAckTimeoutMs: int
         Mapping: LovenseMappingConfig
+    }
+
+and LovenseDeveloperConfig =
+    {
+        Token: string option
+        UserId: string option
+        UserName: string option
+        UserEmail: string option
+        UserToken: string option
     }
 
 and LovenseMappingConfig =
@@ -100,6 +110,14 @@ type LoggingConfig =
         RawLogPrettyPrint: bool
     }
 
+type RecordingConfig =
+    {
+        Enabled: bool
+        DatabasePath: string
+        SliceMs: int
+        RecordRawContext: bool
+    }
+
 type PositionBasedRotationConfig =
     {
         Enable: bool
@@ -121,6 +139,7 @@ type AppConfig =
         Runtime: RuntimeConfig
         Scoring: ScoringConfig
         Logging: LoggingConfig
+        Recording: RecordingConfig
         PositionBasedRotation: PositionBasedRotationConfig
     }
 
@@ -293,6 +312,12 @@ module Configuration =
         if not (allowedLogLevels.Contains(config.Logging.TrackLogLevel.ToUpperInvariant())) then
             invalidArg "Logging.TrackLogLevel" "Logging.TrackLogLevel must be one of: Trace, Debug, Info, Warn, Error."
 
+        if config.Recording.SliceMs <= 0 then
+            invalidArg "Recording.SliceMs" "Recording.SliceMs must be greater than zero."
+
+        if String.IsNullOrWhiteSpace config.Recording.DatabasePath then
+            invalidArg "Recording.DatabasePath" "Recording.DatabasePath cannot be empty."
+
         config
 
     let load () =
@@ -316,6 +341,14 @@ module Configuration =
                     AuthToken = optionalString root "Lovense:AuthToken"
                     ToyId = optionalString root "Lovense:ToyId"
                     Platform = requiredValue root "Lovense:Platform"
+                    Developer =
+                        {
+                            Token = optionalString root "Lovense:Developer:Token"
+                            UserId = optionalString root "Lovense:Developer:UserId"
+                            UserName = optionalString root "Lovense:Developer:UserName"
+                            UserEmail = optionalString root "Lovense:Developer:UserEmail"
+                            UserToken = optionalString root "Lovense:Developer:UserToken"
+                        }
                     CommandTimeSec = floatValue root "Lovense:CommandTimeSec"
                     DryRun = boolValue root "Lovense:DryRun"
                     ConnectTimeoutMs = intValue root "Lovense:ConnectTimeoutMs"
@@ -403,6 +436,14 @@ module Configuration =
                     LogRawLeague = boolValue root "Logging:LogRawLeague"
                     LogRawLovense = boolValue root "Logging:LogRawLovense"
                     RawLogPrettyPrint = boolValue root "Logging:RawLogPrettyPrint"
+                }
+
+            Recording =
+                {
+                    Enabled = boolValue root "Recording:Enabled"
+                    DatabasePath = requiredValue root "Recording:DatabasePath"
+                    SliceMs = intValue root "Recording:SliceMs"
+                    RecordRawContext = boolValue root "Recording:RecordRawContext"
                 }
 
             PositionBasedRotation =

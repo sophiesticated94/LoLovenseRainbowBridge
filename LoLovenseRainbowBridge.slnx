@@ -1,4 +1,5 @@
 <Solution>
   <Project Path="LoLovenseRainbowBridge/LoLovenseRainbowBridge.fsproj" />
+  <Project Path="LoLovenseRainbowBridge.Recording.Data/LoLovenseRainbowBridge.Recording.Data.csproj" />
   <Project Path="LoLovenseRainbowBridge.Tests/LoLovenseRainbowBridge.Tests.fsproj" />
 </Solution>

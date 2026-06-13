@@ -3,6 +3,7 @@ bin/
 obj/
 log/
 logs/
+data/
 *.user
 *.suo
 *.nupkg

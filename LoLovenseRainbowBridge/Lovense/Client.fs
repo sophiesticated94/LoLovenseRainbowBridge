@@ -60,6 +60,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
     let mutable socketInfo: SocketUrlInfo option = None
     let mutable qrCodeLogged = false
     let mutable supportedFunctions: Set<string> option = None
+    let mutable generatedAuthToken: string option = None
 
     let invariantFloat (value: float) =
         value.ToString(CultureInfo.InvariantCulture)
@@ -135,6 +136,57 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
     let socketUrlRequestBody authToken =
         $"""{{"{Constants.Lovense.PlatformField}":"{escapeJsonString config.Platform}","{Constants.Lovense.AuthTokenField}":"{escapeJsonString authToken}"}}"""
 
+    let tokenRequestBody (developerToken: string) =
+        let body = JsonObject()
+        body[Constants.Lovense.DeveloperTokenField] <- JsonValue.Create(developerToken)
+        body[Constants.Lovense.UserIdField] <- JsonValue.Create(config.Developer.UserId |> Option.defaultValue "")
+
+        for key, value in
+            [
+                Constants.Lovense.UserNameField, config.Developer.UserName
+                Constants.Lovense.UserTokenField, config.Developer.UserToken
+            ] do
+            value
+            |> Option.filter (fun value -> not (String.IsNullOrWhiteSpace value))
+            |> Option.iter (fun value -> body[key] <- JsonValue.Create(value))
+
+        body.ToJsonString()
+
+    let redactedTokenRequestBody =
+        let body = JsonObject()
+        body[Constants.Lovense.DeveloperTokenField] <- JsonValue.Create(Constants.Lovense.AuthTokenRedacted)
+        body[Constants.Lovense.UserIdField] <- JsonValue.Create(config.Developer.UserId |> Option.defaultValue "")
+
+        config.Developer.UserName
+        |> Option.filter (fun value -> not (String.IsNullOrWhiteSpace value))
+        |> Option.iter (fun value -> body[Constants.Lovense.UserNameField] <- JsonValue.Create(value))
+
+        config.Developer.UserToken
+        |> Option.filter (fun value -> not (String.IsNullOrWhiteSpace value))
+        |> Option.iter (fun _ -> body[Constants.Lovense.UserTokenField] <- JsonValue.Create(Constants.Lovense.AuthTokenRedacted))
+
+        body.ToJsonString()
+
+    let parseTokenResponse (body: string) =
+        try
+            let root = JsonNode.Parse(body)
+
+            if isNull root then
+                Error(SocketUrlRejected(Constants.Lovense.GetToken, None, "Lovense returned empty auth token response."))
+            else
+                let code = Json.tryInt Constants.Lovense.CodeField root
+                let message = Json.tryString Constants.Lovense.MessageField root |> Option.defaultValue ""
+
+                match code with
+                | Some Constants.Lovense.SuccessCode ->
+                    match root |> Json.tryGet Constants.Lovense.DataField |> Option.bind (Json.tryString Constants.Lovense.AuthTokenField) with
+                    | Some authToken when not (String.IsNullOrWhiteSpace authToken) -> Ok authToken
+                    | _ -> Error(SocketUrlRejected(Constants.Lovense.GetToken, code, "Token response did not include authToken."))
+                | _ ->
+                    Error(SocketUrlRejected(Constants.Lovense.GetToken, code, message))
+        with ex ->
+            Error(SocketUrlRequestFailed(Constants.Lovense.GetToken, $"Could not parse auth token response: {ex.Message}"))
+
     let parseSocketUrlResponse (body: string) =
         try
             let root = JsonNode.Parse(body)
@@ -173,7 +225,6 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
     let requestSocketUrlAsync (authToken: string) (ct: CancellationToken) =
         task {
             let correlationId = Guid.NewGuid().ToString("N")
-            let body = socketUrlRequestBody authToken
 
             logger.Info(
                 "lovense.socket_url.request",
@@ -191,7 +242,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
 
             try
                 use request = new HttpRequestMessage(HttpMethod.Post, Constants.Lovense.GetSocketUrl)
-                request.Content <- new StringContent(body, Encoding.UTF8, Constants.Lovense.JsonMediaType)
+                request.Content <- new StringContent(socketUrlRequestBody authToken, Encoding.UTF8, Constants.Lovense.JsonMediaType)
 
                 let! response = http.SendAsync(request, ct)
                 let! responseBody = response.Content.ReadAsStringAsync(ct)
@@ -231,6 +282,84 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                 return raise (OperationCanceledException())
             | ex ->
                 return Error(SocketUrlRequestFailed(Constants.Lovense.GetSocketUrl, ex.Message))
+        }
+
+    let requestAuthTokenAsync (developerToken: string) (ct: CancellationToken) =
+        task {
+            let correlationId = Guid.NewGuid().ToString("N")
+
+            logger.Info(
+                "lovense.auth_token.request",
+                "Requesting Lovense user auth token from local developer settings.",
+                {|
+                    correlationId = correlationId
+                    url = Constants.Lovense.GetToken
+                    userIdConfigured = config.Developer.UserId.IsSome
+                    userNameConfigured = config.Developer.UserName.IsSome
+                    userEmailConfigured = config.Developer.UserEmail.IsSome
+                    developerToken = Constants.Lovense.AuthTokenRedacted
+                    rawLogged = logger.IsRawLovenseEnabled
+                |}
+            )
+
+            logger.RawLovenseSocketHttp(correlationId, Constants.Lovense.GetToken, "request", None, redactedTokenRequestBody)
+
+            try
+                use request = new HttpRequestMessage(HttpMethod.Post, Constants.Lovense.GetToken)
+                request.Content <- new StringContent(tokenRequestBody developerToken, Encoding.UTF8, Constants.Lovense.JsonMediaType)
+
+                let! response = http.SendAsync(request, ct)
+                let! responseBody = response.Content.ReadAsStringAsync(ct)
+
+                logger.RawLovenseSocketHttp(correlationId, Constants.Lovense.GetToken, "response", Some(int response.StatusCode), responseBody)
+
+                if not response.IsSuccessStatusCode then
+                    return Error(SocketUrlRequestFailed(Constants.Lovense.GetToken, $"HTTP {(int response.StatusCode)}: {responseBody}"))
+                else
+                    match parseTokenResponse responseBody with
+                    | Ok authToken ->
+                        logger.Info(
+                            "lovense.auth_token.success",
+                            "Received Lovense user auth token.",
+                            {| correlationId = correlationId; authToken = Constants.Lovense.AuthTokenRedacted |}
+                        )
+
+                        return Ok authToken
+                    | Error error ->
+                        logger.Warn(
+                            "lovense.auth_token.rejected",
+                            "Lovense rejected or returned unusable auth token response.",
+                            {| correlationId = correlationId; error = string error |}
+                        )
+
+                        return Error error
+            with
+            | :? OperationCanceledException ->
+                return raise (OperationCanceledException())
+            | ex ->
+                return Error(SocketUrlRequestFailed(Constants.Lovense.GetToken, ex.Message))
+        }
+
+    let resolveAuthTokenAsync (ct: CancellationToken) =
+        task {
+            match generatedAuthToken |> Option.orElse config.AuthToken with
+            | Some authToken when not (String.IsNullOrWhiteSpace authToken) ->
+                return Ok authToken
+
+            | _ ->
+                match config.Developer.Token, config.Developer.UserId with
+                | Some developerToken, Some _ when not (String.IsNullOrWhiteSpace developerToken) ->
+                    let! tokenResult = requestAuthTokenAsync developerToken ct
+
+                    match tokenResult with
+                    | Ok authToken ->
+                        generatedAuthToken <- Some authToken
+                        return Ok authToken
+                    | Error error ->
+                        return Error error
+
+                | _ ->
+                    return Error MissingAuthToken
         }
 
     let logSocketEvent eventName correlationId (ctx: IEventContext) =
@@ -406,40 +535,42 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                             SocketId = None
                         }
             else
-                match config.AuthToken with
-                | None ->
-                    return Error MissingAuthToken
+                match socket with
+                | Some client when client.Connected ->
+                    return
+                        Ok
+                            {
+                                Connected = true
+                                DryRun = false
+                                SocketIoUrl = socketInfo |> Option.map (fun info -> info.SocketIoUrl)
+                                SocketIoPath = socketInfo |> Option.map (fun info -> info.SocketIoPath)
+                                SocketId = if String.IsNullOrWhiteSpace client.Id then None else Some client.Id
+                            }
 
-                | Some authToken ->
-                    match socket with
-                    | Some client when client.Connected ->
-                        return
-                            Ok
-                                {
-                                    Connected = true
-                                    DryRun = false
-                                    SocketIoUrl = socketInfo |> Option.map (fun info -> info.SocketIoUrl)
-                                    SocketIoPath = socketInfo |> Option.map (fun info -> info.SocketIoPath)
-                                    SocketId = if String.IsNullOrWhiteSpace client.Id then None else Some client.Id
-                                }
+                | _ ->
+                    do! connectGate.WaitAsync(ct)
 
-                    | _ ->
-                        do! connectGate.WaitAsync(ct)
+                    try
+                        match socket with
+                        | Some client when client.Connected ->
+                            return
+                                Ok
+                                    {
+                                        Connected = true
+                                        DryRun = false
+                                        SocketIoUrl = socketInfo |> Option.map (fun info -> info.SocketIoUrl)
+                                        SocketIoPath = socketInfo |> Option.map (fun info -> info.SocketIoPath)
+                                        SocketId = if String.IsNullOrWhiteSpace client.Id then None else Some client.Id
+                                    }
 
-                        try
-                            match socket with
-                            | Some client when client.Connected ->
-                                return
-                                    Ok
-                                        {
-                                            Connected = true
-                                            DryRun = false
-                                            SocketIoUrl = socketInfo |> Option.map (fun info -> info.SocketIoUrl)
-                                            SocketIoPath = socketInfo |> Option.map (fun info -> info.SocketIoPath)
-                                            SocketId = if String.IsNullOrWhiteSpace client.Id then None else Some client.Id
-                                        }
+                        | _ ->
+                            let! authTokenResult = resolveAuthTokenAsync ct
 
-                            | _ ->
+                            match authTokenResult with
+                            | Error error ->
+                                return Error error
+
+                            | Ok authToken ->
                                 let! socketUrlResult = requestSocketUrlAsync authToken ct
 
                                 match socketUrlResult with
@@ -449,8 +580,8 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                                 | Ok info ->
                                     let! connected = connectSocketAsync info ct
                                     return connected
-                        finally
-                            connectGate.Release() |> ignore
+                    finally
+                        connectGate.Release() |> ignore
         }
 
     member this.SendCommandPlanAsync(plan: LovenseCommandPlan, requestedValue: int, ct: CancellationToken) =

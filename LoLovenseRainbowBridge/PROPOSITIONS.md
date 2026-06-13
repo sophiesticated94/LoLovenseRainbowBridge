@@ -57,15 +57,28 @@ Add named pattern presets:
 Presets would choose calculator weights and Lovense action preferences without
 changing core code.
 
-## Replay Calibration Mode
+## Lovense Pattern Export
 
-Feed saved or recorded Live Client JSONL into the calculators:
+SQLite is now the internal gameplay recording format, but export could make
+recordings useful outside the bridge:
 
-- replay a match timeline without LoL running
-- compare generated command plans
-- tune thresholds safely in dry-run mode
+- export simple vibration timelines to Lovense Pattern or PatternV2
+- export media-sync friendly FunScript-style position curves
+- keep richer multi-function/context data in SQLite as the source of truth
 
-This would make iteration much faster than testing only in live games.
+This should be an export step, not the primary storage format, because pattern
+formats cannot represent the full bridge context cleanly.
+
+## Replay Analysis Dashboard
+
+Build a small local dashboard over `data/gameplay.sqlite`:
+
+- show intensity over time
+- mark kills, deaths, objectives, teamfights, and minimap rotation
+- compare calculated base versus temporary boosts
+- scrub the Lovense command timeline before replaying it
+
+This would make tuning much faster than reading JSONL and SQLite rows by hand.
 
 ## Minimap Auto-Calibration
 

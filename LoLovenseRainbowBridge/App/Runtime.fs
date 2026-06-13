@@ -8,6 +8,7 @@ open LoLovenseRainbowBridge.Bridge
 open LoLovenseRainbowBridge.Bridge.Scoring
 open LoLovenseRainbowBridge.LeagueOfLegends
 open LoLovenseRainbowBridge.Lovense
+open LoLovenseRainbowBridge.Recording
 open LoLovenseRainbowBridge.ScreenCapture
 open LoLovenseRainbowBridge.MinimapDetector
 open LoLovenseRainbowBridge.PositionMapping
@@ -135,11 +136,14 @@ module Runtime =
         (lovenseConfig: LovenseConfig)
         (lovenseClient: LovenseClient)
         (logger: StructuredSessionLogger)
+        (recorder: GameplayRecorder option)
         (state: GeneratorState)
         (failureState: ConnectionFailureState)
         (ct: CancellationToken)
         =
         task {
+            recorder |> Option.iter (fun recorder -> recorder.CloseActiveGame(DateTimeOffset.UtcNow))
+
             let now = DateTimeOffset.UtcNow
             let stopPlan = Mapping.stopPlan lovenseConfig StopCommand
             let stopAction = Mapping.planActionString stopPlan
@@ -190,6 +194,8 @@ module Runtime =
         (leagueClient: LeagueLiveClient)
         (lovenseClient: LovenseClient)
         (logger: StructuredSessionLogger)
+        (recorder: GameplayRecorder option)
+        (recordingConfigSummary: obj)
         (state: GeneratorState)
         (failureState: ConnectionFailureState)
         (positionRotationState: PositionRotationState)
@@ -219,9 +225,9 @@ module Runtime =
                         |}
                     )
 
-                    let! nextState, nextFailureState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger state nextFailureState ct
+                    let! nextState, nextFailureState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger recorder state nextFailureState ct
                     do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
-                    return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger nextState nextFailureState positionRotationState ct
+                    return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger recorder recordingConfigSummary nextState nextFailureState positionRotationState ct
 
                 | Ok gameData ->
                     match Parser.parseGameSnapshotResult gameData.Root with
@@ -240,9 +246,9 @@ module Runtime =
                             |}
                         )
 
-                        let! nextState, nextFailureState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger state nextFailureState ct
+                        let! nextState, nextFailureState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger recorder state nextFailureState ct
                         do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
-                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger nextState nextFailureState positionRotationState ct
+                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger recorder recordingConfigSummary nextState nextFailureState positionRotationState ct
 
                     | Ok parsed ->
                         let now = DateTimeOffset.UtcNow
@@ -445,6 +451,18 @@ module Runtime =
                                     | Ok _ ->
                                         let nextFailureState = recordLovenseSuccess now failureAfterLeagueSuccess
 
+                                        recorder
+                                        |> Option.iter (fun recorder ->
+                                            recorder.RecordPlan(
+                                                now,
+                                                recordingConfigSummary,
+                                                snapshot,
+                                                breakdown,
+                                                commandPlan,
+                                                actionString,
+                                                { Attempted = true; Success = Some true; Error = None }
+                                            ))
+
                                         logger.Info(
                                             "runtime.lovense.success",
                                             "Lovense command sent successfully; resetting Lovense retry counter.",
@@ -458,6 +476,18 @@ module Runtime =
                                     | Error error ->
                                         let nextFailureState = recordLovenseFailure (lovenseErrorMessage error) failureAfterLeagueSuccess
 
+                                        recorder
+                                        |> Option.iter (fun recorder ->
+                                            recorder.RecordPlan(
+                                                now,
+                                                recordingConfigSummary,
+                                                snapshot,
+                                                breakdown,
+                                                commandPlan,
+                                                actionString,
+                                                { Attempted = true; Success = Some false; Error = Some(lovenseErrorMessage error) }
+                                            ))
+
                                         logger.Error(
                                             "runtime.lovense.send_failed",
                                             "Lovense command failed; retrying after unavailable delay.",
@@ -470,13 +500,25 @@ module Runtime =
 
                                         return evolved, nextFailureState, runtimeConfig.UnavailableRetryMs
                                 else
+                                    recorder
+                                    |> Option.iter (fun recorder ->
+                                        recorder.RecordPlan(
+                                            now,
+                                            recordingConfigSummary,
+                                            snapshot,
+                                            breakdown,
+                                            commandPlan,
+                                            actionString,
+                                            { Attempted = false; Success = None; Error = None }
+                                        ))
+
                                     return evolved, failureAfterLeagueSuccess, runtimeConfig.PollMs
                             }
 
                         let nextGeneratorState, nextFailureState, delayMs = nextState
 
                         do! Task.Delay(delayMs, ct)
-                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger nextGeneratorState nextFailureState positionRotationState ct
+                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger recorder recordingConfigSummary nextGeneratorState nextFailureState positionRotationState ct
 
             with
             | :? OperationCanceledException ->
@@ -494,8 +536,8 @@ module Runtime =
                     |}
                 )
 
-                let! nextState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger state failureState ct
+                let! nextState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger recorder state failureState ct
                 do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
                 let nextGeneratorState, nextFailureState = nextState
-                return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger nextGeneratorState nextFailureState positionRotationState ct
+                return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger recorder recordingConfigSummary nextGeneratorState nextFailureState positionRotationState ct
         }

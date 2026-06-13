@@ -22,6 +22,7 @@ LeagueOfLegends/Mapper.fs         LoL snapshot → bridge snapshot
 LeagueOfLegends/LiveClient.fs     HTTP client for https://127.0.0.1:2999
 Lovense/Contracts.fs              Lovense command contracts
 Lovense/Client.fs                 Lovense Standard Socket API client
+Recording/Recording.fs            SQLite gameplay recording and replay
 App/Runtime.fs                    orchestration loop
 ScreenCapture/ScreenCapture.fs    Windows screen-region capture
 MinimapDetector/MinimapDetector.fs OpenCV minimap player marker detection
@@ -50,9 +51,10 @@ Optional:
 $env:LOVENSE_TOY_ID="your_toy_id"
 ```
 
-Lovense uses the Standard Socket API. The app expects a user `AuthToken` from your
-server-side Lovense authorization flow; it does not store or request a Lovense
-developer token locally.
+Lovense uses the Standard Socket API. The app expects a user `AuthToken` in
+`appsettings.Local.json` or `LOVENSE__AUTHTOKEN`. For local testing, the ignored
+local config can also hold Lovense developer data used to request an auth token;
+tracked config and logs redact those values.
 
 ## Logs
 
@@ -75,6 +77,59 @@ $env:LOGGING__LOGRAWLEAGUE="true"
 $env:LOGGING__LOGRAWLOVENSE="true"
 $env:LOGGING__TRACKLOGLEVEL="Debug" # Trace, Debug, Info, Warn, Error
 ```
+
+## Gameplay Recording
+
+SQLite gameplay recording is enabled by default:
+
+```json
+"Recording": {
+  "Enabled": true,
+  "DatabasePath": "data/gameplay.sqlite",
+  "SliceMs": 100,
+  "RecordRawContext": false
+}
+```
+
+Every valid LoL session gets a unique `gameId`. The recorder starts when the
+first valid League snapshot is parsed after an unavailable state, closes when
+LoL becomes unavailable or the app stops, and stores Lovense output diffs in
+`lovense_records`.
+
+The database schema is EF Core code-first. The EF model and generated migrations
+live in `LoLovenseRainbowBridge.Recording.Data`, and the app applies migrations
+with `Database.Migrate()` at startup/list/replay time.
+
+Schema:
+
+```text
+games(game_id, started_at, ended_at, app_version, config_summary_json)
+lovense_records(id, game_id, datetime, offset_ms, duration_ms, context_diff_json)
+```
+
+`context_diff_json` is compact JSON. It records only changed Lovense function
+values plus the action string, command reasons, intensity summary, recent LoL
+event ids, and send result. Rows are coalesced into `Recording.SliceMs` windows;
+unchanged output is not duplicated.
+
+List saved games:
+
+```powershell
+dotnet run -- --list-recordings
+```
+
+Replay a saved Lovense output timeline without LoL running:
+
+```powershell
+dotnet run -- --replay <gameId>
+dotnet run -- --replay <gameId> --dry-run
+dotnet run -- --replay <gameId> --speed 2
+```
+
+Replay reconstructs the recorded Lovense Function command sequence and sends it
+through the same Socket API client. SQLite is the internal source of truth
+because it preserves bridge context and multi-function state; Lovense Pattern,
+PatternV2, or media-sync exports can be added later for narrower use cases.
 
 ## Lovense response mapping
 
