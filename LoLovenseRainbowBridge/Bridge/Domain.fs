@@ -200,9 +200,6 @@ module Scoring =
                 Pulses = []
         }
 
-    let updateHealthPressure (_config: ScoringConfig) (_snapshot: BridgeSnapshot) state =
-        state
-
     let emptyBreakdown =
         {
             PerformanceScore = 0.0

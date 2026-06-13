@@ -23,6 +23,8 @@ module Runtime =
             LastLovenseError: string option
             LastSuccessfulLeagueAt: DateTimeOffset option
             LastSuccessfulLovenseAt: DateTimeOffset option
+            LeagueUnavailableSince: DateTimeOffset option
+            RunAt: DateTimeOffset
         }
 
     type PositionRotationState =
@@ -39,6 +41,8 @@ module Runtime =
             LastLovenseError = None
             LastSuccessfulLeagueAt = None
             LastSuccessfulLovenseAt = None
+            LeagueUnavailableSince = None
+            RunAt = DateTimeOffset.UtcNow
         }
 
     let initialPositionRotationState =
@@ -57,10 +61,13 @@ module Runtime =
         else "Right"
 
     let private recordLeagueFailure error failureState =
+        let now = DateTimeOffset.UtcNow
+
         {
             failureState with
                 LeagueFailureAttemptsSinceSuccess = failureState.LeagueFailureAttemptsSinceSuccess + 1
                 LastLeagueError = Some error
+                LeagueUnavailableSince = failureState.LeagueUnavailableSince |> Option.orElse (Some now)
         }
 
     let private recordLeagueSuccess now failureState =
@@ -69,6 +76,7 @@ module Runtime =
                 LeagueFailureAttemptsSinceSuccess = 0
                 LastLeagueError = None
                 LastSuccessfulLeagueAt = Some now
+                LeagueUnavailableSince = None
         }
 
     let private recordLovenseFailure error failureState =
@@ -195,6 +203,73 @@ module Runtime =
                 return state, failureState
         }
 
+    let private handleLeagueUnavailableVibration
+        (runtimeConfig: RuntimeConfig)
+        (lovenseConfig: LovenseConfig)
+        (lovenseClient: LovenseClient)
+        (logger: StructuredSessionLogger)
+        (recorder: GameplayRecorder option)
+        (state: GeneratorState)
+        (failureState: ConnectionFailureState)
+        (ct: CancellationToken)
+        =
+        task {
+            recorder |> Option.iter (fun recorder -> recorder.CloseActiveGame(DateTimeOffset.UtcNow))
+
+            let now = DateTimeOffset.UtcNow
+            let unavailableSince = failureState.LeagueUnavailableSince |> Option.defaultValue now
+            let elapsedMs = max 0L (int64 (now - unavailableSince).TotalMilliseconds)
+            let plan = Mapping.lolNotRunningPlan lovenseConfig elapsedMs
+            let actionString = LovenseActionCodec.planActionString plan
+            let intensity = Mapping.lolNotRunningIntensity elapsedMs
+            let shouldSend = shouldSendCommand runtimeConfig.ResendEveryMs now actionString state
+
+            logger.Info(
+                "runtime.league.unavailable_vibration",
+                "Decided whether to send Lovense fallback vibration while League is unavailable.",
+                {|
+                    shouldSend = shouldSend
+                    unavailableSince = unavailableSince
+                    elapsedMs = elapsedMs
+                    formula = "10 + ceil(sin(elapsedMs / 10000.0)) * 5"
+                    intensity = intensity
+                    attemptSinceLastSuccess = failureState.LeagueFailureAttemptsSinceSuccess
+                    retryDelayMs = runtimeConfig.UnavailableRetryMs
+                    candidateAction = actionString
+                    finalAction = actionString
+                    previousLastSent = state.LastSent
+                    previousLastSentCommand = state.LastSentCommand
+                |}
+            )
+
+            if shouldSend then
+                let! result = lovenseClient.SendCommandPlanAsync(plan, intensity, [], ct)
+
+                match result with
+                | Ok _ ->
+                    let nextFailureState = recordLovenseSuccess now failureState
+                    return { state with LastSent = Some(intensity, now); LastSentCommand = Some(actionString, now) }, nextFailureState
+
+                | Error error ->
+                    let nextFailureState = recordLovenseFailure (lovenseErrorMessage error) failureState
+
+                    logger.Error(
+                        "runtime.league.unavailable_vibration_error",
+                        "Could not send Lovense fallback vibration while League is unavailable.",
+                        {|
+                            error = lovenseErrorSummary error
+                            attemptSinceLastSuccess = nextFailureState.LovenseFailureAttemptsSinceSuccess
+                            retryDelayMs = runtimeConfig.UnavailableRetryMs
+                            candidateAction = actionString
+                            finalAction = actionString
+                        |}
+                    )
+
+                    return state, nextFailureState
+            else
+                return state, failureState
+        }
+
     let rec loop
         (runtimeConfig: RuntimeConfig)
         (scoringConfig: ScoringConfig)
@@ -238,7 +313,7 @@ module Runtime =
                         |}
                     )
 
-                    let! nextState, nextFailureState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger recorder state nextFailureState ct
+                    let! nextState, nextFailureState = handleLeagueUnavailableVibration runtimeConfig lovenseConfig lovenseClient logger recorder state nextFailureState ct
                     do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
                     return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextState nextFailureState positionRotationState currentLoopIteration ct
 
@@ -268,7 +343,7 @@ module Runtime =
                         let failureAfterLeagueSuccess = recordLeagueSuccess now failureState
                         let lolSnapshot = parsed.Snapshot
                         let snapshot = Mapper.toBridgeSnapshot scoringConfig lolSnapshot
-                        let evolved = evolve scoringConfig snapshot state |> updateHealthPressure scoringConfig snapshot
+                        let evolved = evolve scoringConfig snapshot state
 
                         let planningPosition, positionRotationState =
                             if positionRotationConfig.Enable then

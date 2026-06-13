@@ -72,6 +72,7 @@ module LovenseActionCodec =
             $"CapabilityFiltered:{joined}"
         | RuleContribution ruleName -> $"RuleContribution:{ruleName}"
         | StopCommand -> "StopCommand"
+        | SourceNotConnected -> "SourceNotConnected"
 
     let planActionString plan =
         match plan.Actions with

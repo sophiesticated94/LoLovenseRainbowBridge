@@ -1,5 +1,6 @@
 namespace LoLovenseRainbowBridge.Lovense
 
+open System
 open LoLovenseRainbowBridge
 
 module Mapping =
@@ -27,5 +28,23 @@ module Mapping =
             Reasons = [ reason ]
             TimeSec = 0.0
             StopPrevious = true
+            ToyId = config.ToyId
+        }
+
+    let lolNotRunningIntensity (elapsedMs: int64) =
+        let intensity =
+            10.0 + Math.Ceiling(Math.Sin(float elapsedMs / 10000.0)) * 5.0
+            |> int
+
+        LovenseFunctionRanges.clamp Vibrate intensity
+
+    let lolNotRunningPlan (config: LovenseConfig) (elapsedMs: int64) =
+        let intensity = lolNotRunningIntensity elapsedMs
+
+        {
+            Actions = [ action Vibrate intensity ]
+            Reasons = [ SourceNotConnected ]
+            TimeSec = config.CommandTimeSec
+            StopPrevious = config.Mapping.DefaultStopPrevious
             ToyId = config.ToyId
         }

@@ -324,6 +324,22 @@ let ``lovense action codec round trips action strings`` () =
     Assert.Equal(actionString, LovenseActionCodec.planActionString plan)
 
 [<Fact>]
+let ``lol unavailable plan uses discrete 10 or 15 fallback vibration`` () =
+    Assert.Equal(10, Mapping.lolNotRunningIntensity 0L)
+    Assert.Equal(15, Mapping.lolNotRunningIntensity 1000L)
+    Assert.Equal(10, Mapping.lolNotRunningIntensity 40000L)
+
+[<Fact>]
+let ``lol unavailable plan uses configured command timing and source reason`` () =
+    let plan = Mapping.lolNotRunningPlan lovenseConfig 1000L
+
+    Assert.Equal(lovenseConfig.CommandTimeSec, plan.TimeSec)
+    Assert.Equal(lovenseConfig.Mapping.DefaultStopPrevious, plan.StopPrevious)
+    Assert.Equal(SourceNotConnected, Assert.Single(plan.Reasons))
+    Assert.Equal("Vibrate:15", LovenseActionCodec.planActionString plan)
+    Assert.Equal("SourceNotConnected", LovenseActionCodec.reasonToString SourceNotConnected)
+
+[<Fact>]
 let ``lovense getToken payload includes documented fields`` () =
     let developer =
         {

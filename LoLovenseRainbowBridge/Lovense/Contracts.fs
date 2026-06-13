@@ -40,6 +40,7 @@ type LovenseCommandReason =
     | CapabilityFiltered of droppedActions: string list
     | RuleContribution of ruleName: string
     | StopCommand
+    | SourceNotConnected
 
 type LovenseCommandPlan =
     {

@@ -6,6 +6,23 @@ open System.Threading
 open LoLovenseRainbowBridge
 open SocketIOClient
 
+type private CachedSessionValue<'T> =
+    {
+        Value: 'T
+        AcquiredAt: DateTimeOffset
+    }
+
+type private LovenseSessionState =
+    {
+        Socket: SocketIO option
+        SocketInfo: CachedSessionValue<SocketUrlInfo> option
+        QrCodeLogged: bool
+        SupportedFunctions: Set<string> option
+        CapabilityProfiles: LovenseToyCapabilityProfile list
+        GeneratedAuthToken: CachedSessionValue<string> option
+        LatestDeviceInfo: LovenseDeviceInfo option
+    }
+
 type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: StructuredSessionLogger) =
 
     let http = Shared.insecureHttpClient ()
@@ -17,13 +34,16 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
 
     let connectGate = new Threading.SemaphoreSlim(1, 1)
 
-    let mutable socket: SocketIO option = None
-    let mutable socketInfo: SocketUrlInfo option = None
-    let mutable qrCodeLogged = false
-    let mutable supportedFunctions: Set<string> option = None
-    let mutable capabilityProfiles: LovenseToyCapabilityProfile list = []
-    let mutable generatedAuthToken: string option = None
-    let mutable latestDeviceInfo: LovenseDeviceInfo option = None
+    let mutable session =
+        {
+            Socket = None
+            SocketInfo = None
+            QrCodeLogged = false
+            SupportedFunctions = None
+            CapabilityProfiles = []
+            GeneratedAuthToken = None
+            LatestDeviceInfo = None
+        }
 
     let invariantFloat (value: float) =
         value.ToString(CultureInfo.InvariantCulture)
@@ -32,12 +52,13 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
         value.Replace("\\", "\\\\").Replace("\"", "\\\"")
 
     let applyDeviceInfo (deviceInfo: LovenseDeviceInfo) =
-        latestDeviceInfo <- Some deviceInfo
-        capabilityProfiles <- deviceInfo.CapabilityProfiles
-
-        match deviceInfo.SupportedFunctions with
-        | Some functions -> supportedFunctions <- Some functions
-        | None -> ()
+        session <-
+            {
+                session with
+                    LatestDeviceInfo = Some deviceInfo
+                    CapabilityProfiles = deviceInfo.CapabilityProfiles
+                    SupportedFunctions = deviceInfo.SupportedFunctions |> Option.orElse session.SupportedFunctions
+            }
 
     let onDeviceInfo (deviceInfo: LovenseDeviceInfo) =
         task {
@@ -63,8 +84,8 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
         }
 
     let onQrCode () =
-        if not qrCodeLogged then
-            qrCodeLogged <- true
+        if not session.QrCodeLogged then
+            session <- { session with QrCodeLogged = true }
             printfn "Lovense QR code event received. See track.log or lovense.log if raw logging is enabled."
 
     let createCommandPayload (plan: LovenseCommandPlan) correlationId =
@@ -153,29 +174,105 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                 notes = profile.Notes
             |})
 
-    let resolveAuthTokenAsync (ct: CancellationToken) =
+    let invalidateSessionCache reason =
+        logger.Warn(
+            "lovense.session.cache_invalidated",
+            "Lovense cached auth/socket session data invalidated before retry.",
+            {| reason = reason |}
+        )
+
+        session <-
+            {
+                session with
+                    GeneratedAuthToken = None
+                    SocketInfo = None
+            }
+
+    let shouldRetryWithFreshSession error =
+        match error with
+        | MissingDeveloperCredentials _ -> false
+        | _ -> true
+
+    let resolveAuthTokenAsync forceRefresh (ct: CancellationToken) =
         task {
-            match generatedAuthToken with
-            | Some authToken when not (String.IsNullOrWhiteSpace authToken) ->
-                return Ok authToken
+            match session.GeneratedAuthToken, forceRefresh with
+            | Some cached, false when not (String.IsNullOrWhiteSpace cached.Value) ->
+                logger.Debug(
+                    "lovense.auth.cache_hit",
+                    "Using cached Lovense auth token from application state.",
+                    {| acquiredAt = cached.AcquiredAt; authToken = Constants.Lovense.AuthTokenRedacted |}
+                )
+
+                return Ok cached.Value
 
             | _ ->
+                logger.Info(
+                    "lovense.auth.cache_miss",
+                    "Lovense auth token is missing or was invalidated; requesting a fresh token.",
+                    {| forceRefresh = forceRefresh |}
+                )
+
                 let! tokenResult = Auth.requestAuthTokenAsync http logger config.Developer ct
 
                 match tokenResult with
                 | Ok authToken ->
-                    generatedAuthToken <- Some authToken
+                    let acquiredAt = DateTimeOffset.UtcNow
+                    session <- { session with GeneratedAuthToken = Some { Value = authToken; AcquiredAt = acquiredAt } }
+
+                    logger.Info(
+                        "lovense.auth.refresh",
+                        "Lovense auth token stored in application state.",
+                        {| acquiredAt = acquiredAt; authToken = Constants.Lovense.AuthTokenRedacted |}
+                    )
+
                     return Ok authToken
                 | Error error ->
                     return Error error
         }
 
+    let resolveSocketUrlAsync authToken forceRefresh (ct: CancellationToken) =
+        task {
+            match session.SocketInfo, forceRefresh with
+            | Some cached, false ->
+                logger.Debug(
+                    "lovense.socket_url.cache_hit",
+                    "Using cached Lovense Socket.IO URL from application state.",
+                    {| acquiredAt = cached.AcquiredAt; socketIoUrl = cached.Value.SocketIoUrl; socketIoPath = cached.Value.SocketIoPath |}
+                )
+
+                return Ok cached.Value
+
+            | _ ->
+                logger.Info(
+                    "lovense.socket_url.cache_miss",
+                    "Lovense Socket.IO URL is missing or was invalidated; requesting fresh connection details.",
+                    {| forceRefresh = forceRefresh; platform = config.Platform |}
+                )
+
+                let! socketUrlResult = SocketUrl.requestSocketUrlAsync http logger config.Platform authToken ct
+
+                match socketUrlResult with
+                | Error error ->
+                    return Error error
+                | Ok info ->
+                    let acquiredAt = DateTimeOffset.UtcNow
+                    session <- { session with SocketInfo = Some { Value = info; AcquiredAt = acquiredAt } }
+
+                    logger.Info(
+                        "lovense.socket_url.refresh",
+                        "Lovense Socket.IO URL stored in application state.",
+                        {| acquiredAt = acquiredAt; socketIoUrl = info.SocketIoUrl; socketIoPath = info.SocketIoPath |}
+                    )
+
+                    return Ok info
+        }
+
     member _.CommandUrl =
-        match socketInfo with
-        | Some info -> $"{info.SocketIoUrl} ({info.SocketIoPath})"
+        match session.SocketInfo with
+        | Some cached -> $"{cached.Value.SocketIoUrl} ({cached.Value.SocketIoPath})"
         | None -> Constants.Lovense.GetSocketUrl
 
-    member _.LatestDeviceInfo = latestDeviceInfo
+    member _.LatestDeviceInfo = session.LatestDeviceInfo
 
     member _.EnsureConnectedAsync(ct: CancellationToken) =
         task {
@@ -190,15 +287,15 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                             SocketId = None
                         }
             else
-                match socket with
+                match session.Socket with
                 | Some client when client.Connected ->
                     return
                         Ok
                             {
                                 Connected = true
                                 DryRun = false
-                                SocketIoUrl = socketInfo |> Option.map (fun info -> info.SocketIoUrl)
-                                SocketIoPath = socketInfo |> Option.map (fun info -> info.SocketIoPath)
+                                SocketIoUrl = session.SocketInfo |> Option.map (fun cached -> cached.Value.SocketIoUrl)
+                                SocketIoPath = session.SocketInfo |> Option.map (fun cached -> cached.Value.SocketIoPath)
                                 SocketId = if String.IsNullOrWhiteSpace client.Id then None else Some client.Id
                             }
 
@@ -206,42 +303,58 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                     do! connectGate.WaitAsync(ct)
 
                     try
-                        match socket with
+                        let connectOnce forceRefresh =
+                            task {
+                                let! authTokenResult = resolveAuthTokenAsync forceRefresh ct
+
+                                match authTokenResult with
+                                | Error error ->
+                                    return Error error
+
+                                | Ok authToken ->
+                                    let! socketUrlResult = resolveSocketUrlAsync authToken forceRefresh ct
+
+                                    match socketUrlResult with
+                                    | Error error ->
+                                        return Error error
+
+                                    | Ok info ->
+                                        let! connected = SocketRuntime.connectAsync config logger onDeviceInfo onQrCode info ct
+
+                                        match connected with
+                                        | Ok (client, state) ->
+                                            session <- { session with Socket = Some client }
+                                            return Ok state
+                                        | Error error ->
+                                            return Error error
+                            }
+
+                        match session.Socket with
                         | Some client when client.Connected ->
                             return
                                 Ok
                                     {
                                         Connected = true
                                         DryRun = false
-                                        SocketIoUrl = socketInfo |> Option.map (fun info -> info.SocketIoUrl)
-                                        SocketIoPath = socketInfo |> Option.map (fun info -> info.SocketIoPath)
+                                        SocketIoUrl = session.SocketInfo |> Option.map (fun cached -> cached.Value.SocketIoUrl)
+                                        SocketIoPath = session.SocketInfo |> Option.map (fun cached -> cached.Value.SocketIoPath)
                                         SocketId = if String.IsNullOrWhiteSpace client.Id then None else Some client.Id
                                     }
 
                         | _ ->
-                            let! authTokenResult = resolveAuthTokenAsync ct
+                            let! firstAttempt = connectOnce false
 
-                            match authTokenResult with
+                            match firstAttempt with
+                            | Ok state ->
+                                return Ok state
+
+                            | Error error when shouldRetryWithFreshSession error ->
+                                invalidateSessionCache (string error)
+                                let! secondAttempt = connectOnce true
+                                return secondAttempt
+
                             | Error error ->
                                 return Error error
-
-                            | Ok authToken ->
-                                let! socketUrlResult = SocketUrl.requestSocketUrlAsync http logger config.Platform authToken ct
-
-                                match socketUrlResult with
-                                | Error error ->
-                                    return Error error
-
-                                | Ok info ->
-                                    let! connected = SocketRuntime.connectAsync config logger onDeviceInfo onQrCode info ct
-
-                                    match connected with
-                                    | Ok (client, state) ->
-                                        socket <- Some client
-                                        socketInfo <- Some info
-                                        return Ok state
-                                    | Error error ->
-                                        return Error error
                     finally
                         connectGate.Release() |> ignore
         }
@@ -251,7 +364,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
             let safeValue = requestedValue |> Shared.clamp scoringConfig.MinIntensity scoringConfig.MaxIntensity
             let correlationId = Transport.newCorrelationId()
             let candidateActionString = LovenseActionCodec.planActionString plan
-            let capabilityResolution = CapabilityResolver.resolve config capabilityProfiles supportedFunctions plan
+            let capabilityResolution = CapabilityResolver.resolve config session.CapabilityProfiles session.SupportedFunctions plan
             let filteredPlan = capabilityResolution.Plan
             let droppedActions = capabilityResolution.DroppedActions
             let actionString = LovenseActionCodec.planActionString filteredPlan
@@ -355,7 +468,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                         return Error(NotConnected error)
 
                     | Ok _ ->
-                        match socket with
+                        match session.Socket with
                         | None ->
                             return Error(NotConnected(SocketDisconnected "Socket was not available after successful connection."))
 
@@ -417,7 +530,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
 
     member _.DisconnectAsync(ct: CancellationToken) =
         task {
-            match socket with
+            match session.Socket with
             | None ->
                 return Ok()
 
@@ -435,7 +548,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
 
     interface IDisposable with
         member _.Dispose() =
-            match socket with
+            match session.Socket with
             | None -> ()
             | Some client -> client.Dispose()
 
