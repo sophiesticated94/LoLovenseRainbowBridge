@@ -148,11 +148,11 @@ module Program =
                     .AddSingleton<IRuleExpressionEvaluator, RuleExpressionEvaluator>()
                     .AddSingleton<IRuleInputBuilder>(fun _ -> RuleInputBuilder(config.Scoring) :> IRuleInputBuilder)
                     .AddSingleton<ILovenseRuleInterpreter, LovenseRuleInterpreter>()
-                    .AddSingleton<ILovenseCommandBuilder>(fun services ->
-                        LovenseCommandBuilder(config.Lovense, services.GetRequiredService<ILovenseRuleInterpreter>()) :> ILovenseCommandBuilder)
+                    .AddSingleton<ILovenseCommandValueBuilder>(fun services ->
+                        LovenseCommandValueBuilder(config.Lovense, services.GetRequiredService<ILovenseRuleInterpreter>()) :> ILovenseCommandValueBuilder)
                     .BuildServiceProvider()
 
-            let commandBuilder = serviceProvider.GetRequiredService<ILovenseCommandBuilder>()
+            let commandBuilder = serviceProvider.GetRequiredService<ILovenseCommandValueBuilder>()
 
             printfn "LoL → Lovense intensity generator started."
             printfn "LoL target: %s/liveclientdata/allgamedata" config.League.BaseUrl
@@ -182,6 +182,7 @@ module Program =
                     initialState
                     Runtime.initialFailureState
                     Runtime.initialPositionRotationState
+                    0L
                     cts.Token
                 |> fun task -> task.GetAwaiter().GetResult()
 

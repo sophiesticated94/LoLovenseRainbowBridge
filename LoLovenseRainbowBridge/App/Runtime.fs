@@ -202,17 +202,20 @@ module Runtime =
         (positionRotationConfig: PositionBasedRotationConfig)
         (leagueClient: LeagueLiveClient)
         (lovenseClient: LovenseClient)
-        (commandBuilder: ILovenseCommandBuilder)
+        (commandBuilder: ILovenseCommandValueBuilder)
         (logger: StructuredSessionLogger)
         (recorder: GameplayRecorder option)
         (recordingConfigSummary: obj)
         (state: GeneratorState)
         (failureState: ConnectionFailureState)
         (positionRotationState: PositionRotationState)
+        (loopIteration: int64)
         (ct: CancellationToken)
         : Task<unit>
         =
         task {
+            let currentLoopIteration = loopIteration + 1L
+
             try
                 let! fetchResult = leagueClient.FetchAllGameDataAsync ct
 
@@ -237,7 +240,7 @@ module Runtime =
 
                     let! nextState, nextFailureState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger recorder state nextFailureState ct
                     do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
-                    return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextState nextFailureState positionRotationState ct
+                    return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextState nextFailureState positionRotationState currentLoopIteration ct
 
                 | Ok gameData ->
                     match Parser.parseGameSnapshotResult gameData.Root with
@@ -258,7 +261,7 @@ module Runtime =
 
                         let! nextState, nextFailureState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger recorder state nextFailureState ct
                         do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
-                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextState nextFailureState positionRotationState ct
+                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextState nextFailureState positionRotationState currentLoopIteration ct
 
                     | Ok parsed ->
                         let now = DateTimeOffset.UtcNow
@@ -369,6 +372,8 @@ module Runtime =
                                     EvolvedState = evolved
                                     Position = planningPosition
                                     Now = now
+                                    LoopIteration = currentLoopIteration
+                                    RuntimePollMs = runtimeConfig.PollMs
                                 }
 
                         let commandPlan = commandFrame.Plan
@@ -421,6 +426,7 @@ module Runtime =
                                         healthPressure = evolved.HealthPressure
                                         lastSent = evolved.LastSent
                                         lastSentCommand = evolved.LastSentCommand
+                                        loopIteration = currentLoopIteration
                                     |}
                                 breakdown =
                                     {|
@@ -561,7 +567,7 @@ module Runtime =
                         let nextGeneratorState, nextFailureState, delayMs = nextState
 
                         do! Task.Delay(delayMs, ct)
-                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextGeneratorState nextFailureState positionRotationState ct
+                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextGeneratorState nextFailureState positionRotationState currentLoopIteration ct
 
             with
             | :? OperationCanceledException ->
@@ -582,5 +588,5 @@ module Runtime =
                 let! nextState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger recorder state failureState ct
                 do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
                 let nextGeneratorState, nextFailureState = nextState
-                return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextGeneratorState nextFailureState positionRotationState ct
+                return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextGeneratorState nextFailureState positionRotationState currentLoopIteration ct
         }

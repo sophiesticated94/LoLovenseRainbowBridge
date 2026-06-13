@@ -218,10 +218,11 @@ The bridge can run in two Lovense mapping modes:
 the configurable rule engine:
 
 - the rule input builder exposes raw LoL stats, detected events, calculated helper variables, previous command values, and minimap context
-- rules transform those inputs into per-function layers: base, timed, effect, and final
+- rules transform those inputs into per-function layers: base, timed, effect, other, and final
 - one rule can update many functions through `TargetFunctions`, so `Vibrate`, `Vibrate1`, and `Vibrate2` can share the same idea but use different expressions
+- rules can declare `Condition`; it is checked before target expressions run, so skipped rules do not mutate state
 - expressions are evaluated by NCalc; the bridge also accepts natural power syntax such as `MultikillCount^2`
-- command builder memory tracks incarnation thresholds, max base reached this incarnation, last function state, and diffs
+- the command value builder aggregates rule outputs per function before the command formatter creates the Lovense action string
 - unsupported Lovense functions are filtered from the final command plan when capabilities are known
 
 Actual toy behavior depends on the connected toy. If a toy does not support a
@@ -246,8 +247,8 @@ Stop = command-only
 ```
 
 Function profiles are behavior policy over those ranges. They can enable a
-function, apply layer weights, clamp output, and choose a simple curve. They do
-not define protocol ranges; protocol min/max values remain code-owned.
+function, choose an output cap, and apply a simple curve. They do not define
+protocol ranges; protocol min/max values remain code-owned.
 
 ## Toy capabilities and stereo vibration
 
@@ -325,21 +326,27 @@ dotnet run
 Generated command plans are written to `track.log`; raw socket payloads are
 written to `lovense.log` only when `LOGGING__LOGRAWLOVENSE=true`.
 
-## Calculators
+## Rule value model
 
-The bridge intentionally keeps the LoL-to-Lovense logic as calculator-style
-domain code. Runtime orchestration fetches data, updates state, logs breakdowns,
-and sends the selected command; the math lives in pure functions.
+The bridge keeps runtime orchestration thin: fetch LoL, update context, build a
+command value frame, record the diff, and emit it. Gameplay math is expressed by
+configuration rules. The code-owned pieces are the finite rule operations,
+Lovense function ranges, state machine slots, expression evaluation, and command
+formatting.
 
-Main calculated values:
+Each rule target can return any numeric value, including a negative value. Base
+rules run first and update the `Base` layer, but they do not count as an extra
+temporary contribution. Non-base rules add to `Timed`, `Effect`, or `Other`.
+Final output is materialized per Lovense function as:
 
-- `rawBaseValue`: normalized performance, multikill base, and death penalty
-- `liveHealthMultiplier`: interpolated from current HP, default `0.5..1.0`
-- `healthPressureMultiplier`: persistent recovery scar multiplier
-- `healthAdjustedBaseValue`: base value after HP modifiers
-- `baseIntensity`: rounded/capped stable base, default max `18`
-- `temporaryBoost`: sum of active temporary effects
-- `finalIntensity`: `baseIntensity + temporaryBoost`, clamped to `0..20`
+```text
+raw = Base + Timed + Effect + Other
+final = clamp(round(curve(raw)), 0, FunctionMax)
+```
+
+This means configured rules can reduce an intensity below zero internally or
+boost it above a toy range temporarily, but emitted Lovense values always stay
+inside the protocol range.
 
 Health pressure modifies base value only. When HP is lost and then regained, the
 regained part creates a permanent multiplier scar for the current session:
@@ -352,7 +359,7 @@ With the default `FullRegainPressureFactor = 0.8`, regaining 25%, 50%, 75%, or
 100% of a lost segment applies factors `0.95`, `0.90`, `0.85`, and `0.80`.
 Repeated regains compound naturally.
 
-Temporary effects include:
+Default rules include:
 
 - objective waves for dragon, elder, herald, Baron, turret, inhibitor, and stolen objectives
 - teamfight bursts from clustered champion kills and ace events
@@ -360,20 +367,32 @@ Temporary effects include:
 - restrained laning texture before `LaningPhaseEndSec`
 - jungle/objective tension ramps before inferred spawn windows
 
-Heartbeat is configurable. It uses missing health to calculate a positive pulse
-amplitude, then shapes that amplitude with a short asymmetric cycle:
+Heartbeat is modeled as a normal Lovense rule, not as a hardcoded calculator.
+The rule dictionary exposes `LoopIteration`, `LoopTimeSec`, `Pi`,
+`MissingHealth`, and heartbeat tuning constants. The default rule uses missing
+health as amplitude and a cyclic trigonometric expression as the waveform:
 
 ```json
-"LowHealthHeartbeatThreshold": 0.30,
-"HeartbeatPulseMaxAmplitude": 6.0,
-"HeartbeatPulseCycleSec": 1.0,
-"HeartbeatPulseStartPhase": 0.72,
-"HeartbeatPulsePeakPhase": 0.78,
-"HeartbeatPulseEndPhase": 0.98
+{
+  "Name": "heartbeat-near-death-effect",
+  "Kind": "Effect",
+  "Condition": "HealthPercent <= LowHealthHeartbeatThreshold",
+  "TargetFunctions": [
+    {
+      "FunctionName": "Vibrate",
+      "Layer": "Effect",
+      "Operation": "Add",
+      "Expression": "HeartbeatAmplitude * Pow(Max(0, Sin((LoopTimeSec / HeartbeatPulseCycleSec) * 2 * Pi)), 8)"
+    }
+  ]
+}
 ```
 
-Most of the cycle stays near zero; the pulse rises quickly, peaks briefly, then
-falls smoothly. Lower HP means a larger final heartbeat contribution.
+Most of the cycle stays near zero; the positive sine peak is sharpened by
+`Pow(..., 8)`. Lower HP means a larger final heartbeat contribution. Users can
+replace that expression with another cyclic rule without changing code.
+Range variables such as `FunctionMax_Vibrate2` are available too, so a rule can
+express "50% on the right motor" as `FunctionMax_Vibrate2 * 0.5`.
 
 Capability filtering is controlled by:
 

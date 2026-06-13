@@ -79,7 +79,7 @@ and LovenseRuleConfig =
         Kind: string
         Enabled: bool
         Trigger: string
-        When: string
+        Condition: string
         TargetFunctions: LovenseRuleTargetConfig list
     }
 
@@ -90,7 +90,7 @@ and LovenseRuleTargetConfig =
         Layer: string
         Operation: string
         Expression: string
-        When: string
+        Condition: string
         DurationSec: float
     }
 
@@ -274,7 +274,7 @@ module Configuration =
             Layer = sectionString section "Layer"
             Operation = sectionString section "Operation"
             Expression = sectionString section "Expression"
-            When = sectionString section "When"
+            Condition = sectionString section "Condition"
             DurationSec = sectionFloat 0.0 section "DurationSec"
         }
 
@@ -284,7 +284,7 @@ module Configuration =
             Kind = sectionString section "Kind"
             Enabled = sectionBool true section "Enabled"
             Trigger = sectionString section "Trigger"
-            When = sectionString section "When"
+            Condition = sectionString section "Condition"
             TargetFunctions =
                 section.GetSection("TargetFunctions").GetChildren()
                 |> Seq.map loadRuleTarget
@@ -392,7 +392,7 @@ module Configuration =
                 ]
 
         let knownRuleLayers =
-            set [ "BASE"; "TIMED"; "EFFECT"; "STATE" ]
+            set [ "BASE"; "TIMED"; "EFFECT"; "OTHER"; "STATE" ]
 
         for profile in config.Lovense.Mapping.FunctionProfiles do
             if not (knownLovenseFunctions.Contains(profile.FunctionName.ToUpperInvariant())) then

@@ -174,7 +174,7 @@ let functionTarget functionName layer operation expression =
         Layer = layer
         Operation = operation
         Expression = expression
-        When = ""
+        Condition = ""
         DurationSec = 0.0
     }
 
@@ -185,17 +185,17 @@ let stateTarget stateSlot operation expression =
         Layer = "State"
         Operation = operation
         Expression = expression
-        When = ""
+        Condition = ""
         DurationSec = 0.0
     }
 
-let rule name kind trigger whenValue targets =
+let rule name kind trigger conditionValue targets =
     {
         Name = name
         Kind = kind
         Enabled = true
         Trigger = trigger
-        When = whenValue
+        Condition = conditionValue
         TargetFunctions = targets
     }
 
@@ -721,13 +721,18 @@ let ``rule input builder exposes live health and heartbeat variables`` () =
             EvolvedState = initialState
             Position = None
             Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+            LoopIteration = 1L
+            RuntimePollMs = 250
         }
 
     let variables = (RuleInputBuilder(scoringConfig) :> IRuleInputBuilder).Build emptyBuilderState input Map.empty
 
     Assert.Equal(0.1, variables["HealthPercent"], 6)
     Assert.Equal(0.55, variables["LiveHealthMultiplier"], 6)
-    Assert.InRange(variables["HeartbeatPulseValue"], 5.0, 6.0)
+    Assert.Equal(1.0, variables["LoopIteration"], 6)
+    Assert.Equal(0.25, variables["LoopTimeSec"], 6)
+    Assert.Equal(5.4, variables["HeartbeatAmplitude"], 6)
+    Assert.False(variables.ContainsKey("HeartbeatPulseValue"))
 
 [<Fact>]
 let ``ncalc expression evaluator reads state variables`` () =
@@ -736,6 +741,22 @@ let ``ncalc expression evaluator reads state variables`` () =
     match evaluator.Evaluate "MultikillCount^2 - (MultikillCount - 1)^2" (Map.ofList [ "MultikillCount", 3.0 ]) with
     | Ok value -> Assert.Equal(5.0, value, 6)
     | Error error -> failwithf "Expected expression success, got %s" error
+
+[<Fact>]
+let ``ncalc expression evaluator supports trigonometric loop expressions`` () =
+    let evaluator = RuleExpressionEvaluator() :> IRuleExpressionEvaluator
+    let variables =
+        Map.ofList
+            [
+                "LoopTimeSec", 0.25
+                "HeartbeatPulseCycleSec", 1.0
+                "Pi", Math.PI
+                "HeartbeatAmplitude", 6.0
+            ]
+
+    match evaluator.Evaluate "HeartbeatAmplitude * Pow(Max(0, Sin((LoopTimeSec / HeartbeatPulseCycleSec) * 2 * Pi)), 8)" variables with
+    | Ok value -> Assert.Equal(6.0, value, 6)
+    | Error error -> failwithf "Expected trigonometric expression success, got %s" error
 
 [<Fact>]
 let ``rule command builder applies heartbeat as effect without mutating base`` () =
@@ -751,13 +772,13 @@ let ``rule command builder applies heartbeat as effect without mutating base`` (
                                         functionTarget "Vibrate" "Base" "Set" "10"
                                     ]
                                     rule "heartbeat" "Effect" "" "HealthPercent <= 0.30" [
-                                        functionTarget "Vibrate" "Effect" "Add" "HeartbeatPulseValue"
+                                        functionTarget "Vibrate" "Effect" "Add" "HeartbeatAmplitude * Pow(Max(0, Sin((LoopTimeSec / HeartbeatPulseCycleSec) * 2 * Pi)), 8)"
                                     ]
                                 ]
                     }
         }
 
-    let builder = LovenseCommandBuilder(heartbeatConfig, ruleInterpreter()) :> ILovenseCommandBuilder
+    let builder = LovenseCommandValueBuilder(heartbeatConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
     let frame =
         builder.Build
             {
@@ -766,6 +787,8 @@ let ``rule command builder applies heartbeat as effect without mutating base`` (
                 EvolvedState = initialState
                 Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+                LoopIteration = 1L
+                RuntimePollMs = 250
             }
 
     let vibrate = frame.FunctionStates[Vibrate]
@@ -773,6 +796,124 @@ let ``rule command builder applies heartbeat as effect without mutating base`` (
     Assert.Equal(10.0, vibrate.Base, 6)
     Assert.True(vibrate.Effect > 0.0)
     Assert.True(vibrate.Final > 10)
+
+[<Fact>]
+let ``rule condition skips target evaluation and state mutation`` () =
+    let conditionalConfig =
+        {
+            ruleEngineLovenseConfig with
+                Mapping =
+                    {
+                        ruleEngineLovenseConfig.Mapping with
+                            Rules =
+                                [
+                                    rule "base" "BaseModifier" "" "" [
+                                        functionTarget "Vibrate" "Base" "Set" "10"
+                                    ]
+                                    rule "skipped" "Effect" "" "HealthPercent < 0.50" [
+                                        functionTarget "Vibrate" "Effect" "Add" "UnknownVariable + 20"
+                                        stateTarget "MaxBaseThisIncarnation" "Set" "99"
+                                    ]
+                                ]
+                    }
+        }
+
+    let builder = LovenseCommandValueBuilder(conditionalConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let frame =
+        builder.Build
+            {
+                PreviousState = initialState
+                Snapshot = snapshot (Some(1000.0, 1000.0)) []
+                EvolvedState = initialState
+                Position = None
+                Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+                LoopIteration = 1L
+                RuntimePollMs = 250
+            }
+
+    let vibrate = frame.FunctionStates[Vibrate]
+
+    Assert.Equal(10.0, vibrate.Base, 6)
+    Assert.Equal(0.0, vibrate.Effect, 6)
+    Assert.Equal(10, vibrate.Final)
+    Assert.Equal(0.0, frame.BuilderState.MaxBaseThisIncarnation, 6)
+    Assert.Empty(frame.Diagnostics)
+
+[<Fact>]
+let ``rule value aggregation allows negative contributions and clamps final sum`` () =
+    let aggregationConfig =
+        {
+            ruleEngineLovenseConfig with
+                Mapping =
+                    {
+                        ruleEngineLovenseConfig.Mapping with
+                            Rules =
+                                [
+                                    rule "base" "BaseModifier" "" "" [
+                                        functionTarget "Vibrate" "Base" "Set" "10"
+                                    ]
+                                    rule "negative" "Effect" "" "" [
+                                        functionTarget "Vibrate" "Effect" "Add" "-15"
+                                    ]
+                                    rule "positive-overflow" "Effect" "" "" [
+                                        functionTarget "Vibrate1" "Effect" "Add" "FunctionMax_Vibrate1 + 25"
+                                    ]
+                                ]
+                    }
+        }
+
+    let builder = LovenseCommandValueBuilder(aggregationConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let frame =
+        builder.Build
+            {
+                PreviousState = initialState
+                Snapshot = snapshot (Some(1000.0, 1000.0)) []
+                EvolvedState = initialState
+                Position = None
+                Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+                LoopIteration = 1L
+                RuntimePollMs = 250
+            }
+
+    Assert.Equal(10.0, frame.FunctionStates[Vibrate].Base, 6)
+    Assert.Equal(-15.0, frame.FunctionStates[Vibrate].Effect, 6)
+    Assert.Equal(0, frame.FunctionStates[Vibrate].Final)
+    Assert.Equal(45.0, frame.FunctionStates[Vibrate1].Effect, 6)
+    Assert.Equal(20, frame.FunctionStates[Vibrate1].Final)
+
+[<Fact>]
+let ``conditional heartbeat can use function range variables for asymmetric stereo percentage`` () =
+    let heartbeatConfig =
+        {
+            ruleEngineLovenseConfig with
+                Mapping =
+                    {
+                        ruleEngineLovenseConfig.Mapping with
+                            Rules =
+                                [
+                                    rule "heartbeat-asymmetric" "Effect" "" "HealthPercent < 0.50" [
+                                        functionTarget "Vibrate1" "Effect" "Set" "0"
+                                        functionTarget "Vibrate2" "Effect" "Set" "FunctionMax_Vibrate2 * 0.5"
+                                    ]
+                                ]
+                    }
+        }
+
+    let builder = LovenseCommandValueBuilder(heartbeatConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let frame =
+        builder.Build
+            {
+                PreviousState = initialState
+                Snapshot = snapshot (Some(400.0, 1000.0)) []
+                EvolvedState = initialState
+                Position = None
+                Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+                LoopIteration = 1L
+                RuntimePollMs = 250
+            }
+
+    Assert.Equal(0, frame.FunctionStates[Vibrate1].Final)
+    Assert.Equal(10, frame.FunctionStates[Vibrate2].Final)
 
 [<Fact>]
 let ``multikill expression grows by odd deltas`` () =
@@ -787,7 +928,7 @@ let ``multikill expression grows by odd deltas`` () =
         }
 
     let build streak =
-        let builder = LovenseCommandBuilder(ruleEngineLovenseConfig, ruleInterpreter()) :> ILovenseCommandBuilder
+        let builder = LovenseCommandValueBuilder(ruleEngineLovenseConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
         builder.Build
             {
                 PreviousState = initialState
@@ -795,6 +936,8 @@ let ``multikill expression grows by odd deltas`` () =
                 EvolvedState = { initialState with MultikillCount = 1 }
                 Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+                LoopIteration = 1L
+                RuntimePollMs = 500
             }
 
     Assert.Equal(1.0, (build 1).FunctionStates[Vibrate].Base, 6)
@@ -1020,7 +1163,7 @@ let ``lovense function ranges clamp protocol values`` () =
 
 [<Fact>]
 let ``rule command builder tracks max base and clamps to incarnation floor`` () =
-    let builder = LovenseCommandBuilder(ruleEngineLovenseConfig, ruleInterpreter()) :> ILovenseCommandBuilder
+    let builder = LovenseCommandValueBuilder(ruleEngineLovenseConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
     let build baseIntensity =
         let baseSnapshot = snapshot (Some(1000.0, 1000.0)) []
         let active = { baseSnapshot.ActivePlayer with Kills = baseIntensity }
@@ -1032,6 +1175,8 @@ let ``rule command builder tracks max base and clamps to incarnation floor`` () 
                 EvolvedState = initialState
                 Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+                LoopIteration = 1L
+                RuntimePollMs = 500
             }
 
     let first = build 18
@@ -1044,7 +1189,7 @@ let ``rule command builder tracks max base and clamps to incarnation floor`` () 
 
 [<Fact>]
 let ``rule command builder applies minimap stereo position modulation`` () =
-    let builder = LovenseCommandBuilder(ruleEngineLovenseConfig, ruleInterpreter()) :> ILovenseCommandBuilder
+    let builder = LovenseCommandValueBuilder(ruleEngineLovenseConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
     let baseSnapshot = snapshot (Some(1000.0, 1000.0)) []
     let active = { baseSnapshot.ActivePlayer with Kills = 10 }
     let frame =
@@ -1064,6 +1209,8 @@ let ``rule command builder applies minimap stereo position modulation`` () =
                             DetectionMethod = "test"
                         }
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+                LoopIteration = 1L
+                RuntimePollMs = 500
             }
 
     let state = LovenseActionCodec.stateFromActions frame.Plan.Actions

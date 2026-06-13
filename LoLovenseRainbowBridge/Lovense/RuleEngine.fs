@@ -25,6 +25,8 @@ type LovenseCommandBuildInput =
         EvolvedState: GeneratorState
         Position: LovensePlanningPosition option
         Now: DateTimeOffset
+        LoopIteration: int64
+        RuntimePollMs: int
     }
 
 type LovenseFunctionLayers =
@@ -32,6 +34,7 @@ type LovenseFunctionLayers =
         Base: float
         Timed: float
         Effect: float
+        Other: float
         Final: int
         Contributions: string list
     }
@@ -55,7 +58,7 @@ type LovenseRuleDiagnostic =
         Message: string
     }
 
-type LovenseCommandFrame =
+type LovenseCommandValueFrame =
     {
         Plan: LovenseCommandPlan
         ActionString: string
@@ -77,8 +80,8 @@ type IRuleInputBuilder =
 type ILovenseRuleInterpreter =
     abstract Apply: LovenseCommandBuilderState -> LovenseCommandBuildInput -> LovenseRuleConfig list -> Map<LovenseActionFunction, LovenseFunctionLayers> * LovenseCommandBuilderState * LovenseRuleDiagnostic list
 
-type ILovenseCommandBuilder =
-    abstract Build: LovenseCommandBuildInput -> LovenseCommandFrame
+type ILovenseCommandValueBuilder =
+    abstract Build: LovenseCommandBuildInput -> LovenseCommandValueFrame
 
 module LovenseRuleInternals =
 
@@ -87,6 +90,7 @@ module LovenseRuleInternals =
             Base = 0.0
             Timed = 0.0
             Effect = 0.0
+            Other = 0.0
             Final = 0
             Contributions = []
         }
@@ -135,11 +139,25 @@ module LovenseRuleInternals =
                 $"Function.{name}.Base", layer.Base
                 $"Function.{name}.Timed", layer.Timed
                 $"Function.{name}.Effect", layer.Effect
+                $"Function.{name}.Other", layer.Other
                 $"Function.{name}.Final", float layer.Final
                 $"FunctionBase_{name}", layer.Base
                 $"FunctionTimed_{name}", layer.Timed
                 $"FunctionEffect_{name}", layer.Effect
+                $"FunctionOther_{name}", layer.Other
                 $"FunctionFinal_{name}", float layer.Final
+            ])
+        |> Map.ofList
+
+    let functionRangeVariables () =
+        LovenseActionCodec.canonicalFunctions
+        |> List.choose LovenseActionCodec.functionFromName
+        |> List.collect (fun fn ->
+            let name = LovenseActionCodec.actionName fn
+            let range = LovenseFunctionRanges.get fn
+            [
+                $"FunctionMin_{name}", float range.Min
+                $"FunctionMax_{name}", float range.Max
             ])
         |> Map.ofList
 
@@ -308,25 +326,6 @@ type RuleInputBuilder(scoringConfig: ScoringConfig) =
             | _ -> false)
         |> fun hasAce -> if hasAce then 5 else 0
 
-    let smoothStep edge0 edge1 value =
-        if edge1 <= edge0 then
-            0.0
-        else
-            let t = ((value - edge0) / (edge1 - edge0)) |> Shared.clamp01
-            t * t * (3.0 - 2.0 * t)
-
-    let heartbeatPulseShape gameTime =
-        let phase =
-            let normalized = gameTime / scoringConfig.HeartbeatPulseCycleSec
-            normalized - Math.Floor normalized
-
-        if phase < scoringConfig.HeartbeatPulseStartPhase || phase > scoringConfig.HeartbeatPulseEndPhase then
-            0.0
-        elif phase <= scoringConfig.HeartbeatPulsePeakPhase then
-            smoothStep scoringConfig.HeartbeatPulseStartPhase scoringConfig.HeartbeatPulsePeakPhase phase
-        else
-            1.0 - smoothStep scoringConfig.HeartbeatPulsePeakPhase scoringConfig.HeartbeatPulseEndPhase phase
-
     let lastObjectiveTime predicate (snapshot: BridgeSnapshot) =
         snapshot.Events
         |> List.choose (fun ev -> if predicate ev then Some ev.GameTime else None)
@@ -391,8 +390,12 @@ type RuleInputBuilder(scoringConfig: ScoringConfig) =
             let multikillStreak = activeMultikillStreak input
             let teamfightKills = teamfightKillCount input
             let leftWeight, rightWeight = positionWeights input.Position
-            let heartbeatShape = heartbeatPulseShape snapshot.GameTime
             let heartbeatAmplitude = missingHealth * scoringConfig.HeartbeatPulseMaxAmplitude
+            let safePollMs = max 1 input.RuntimePollMs
+            let iterationsPerSecond = max 1.0 (Math.Round(1000.0 / float safePollMs))
+            let loopIteration = float input.LoopIteration
+            let loopIterationWithinSecond = float (input.LoopIteration % int64 iterationsPerSecond)
+            let loopTimeSec = loopIteration * float safePollMs / 1000.0
 
             Map.empty
             |> add "Kills" (float active.Kills)
@@ -425,10 +428,21 @@ type RuleInputBuilder(scoringConfig: ScoringConfig) =
             |> add "TeamfightBurstValue" (teamfightValue input |> float)
             |> add "AceBurstValue" (aceValue input |> float)
             |> add "HeartbeatAmplitude" heartbeatAmplitude
-            |> add "HeartbeatPulseShape" heartbeatShape
-            |> add "HeartbeatPulseValue" (heartbeatAmplitude * heartbeatShape)
+            |> add "LowHealthHeartbeatThreshold" scoringConfig.LowHealthHeartbeatThreshold
+            |> add "CriticalHealthHeartbeatThreshold" scoringConfig.CriticalHealthHeartbeatThreshold
+            |> add "HeartbeatPulseMaxAmplitude" scoringConfig.HeartbeatPulseMaxAmplitude
+            |> add "HeartbeatPulseCycleSec" scoringConfig.HeartbeatPulseCycleSec
+            |> add "HeartbeatPulseStartPhase" scoringConfig.HeartbeatPulseStartPhase
+            |> add "HeartbeatPulsePeakPhase" scoringConfig.HeartbeatPulsePeakPhase
+            |> add "HeartbeatPulseEndPhase" scoringConfig.HeartbeatPulseEndPhase
             |> add "LaningTextureValue" (if snapshot.GameTime <= scoringConfig.LaningPhaseEndSec then min 2.0 (float active.CreepScore / 75.0 + active.WardScore / 25.0 + float active.Assists / 4.0) else 0.0)
             |> add "JungleTensionValue" (jungleTensionValue snapshot)
+            |> add "LoopIteration" loopIteration
+            |> add "LoopIterationWithinSecond" loopIterationWithinSecond
+            |> add "LoopIterationsPerSecond" iterationsPerSecond
+            |> add "LoopTimeSec" loopTimeSec
+            |> add "RuntimePollMs" (float safePollMs)
+            |> add "Pi" Math.PI
             |> add "CurrentBase" state.CurrentBase
             |> add "MaxBaseThisIncarnation" state.MaxBaseThisIncarnation
             |> add "MinBaseThisIncarnation" state.MinBaseThisIncarnation
@@ -442,6 +456,7 @@ type RuleInputBuilder(scoringConfig: ScoringConfig) =
             |> add "PositionRightWeight" rightWeight
             |> LovenseRuleInternals.mergeVariables state.Variables
             |> LovenseRuleInternals.mergeVariables (LovenseRuleInternals.layerVariables layers)
+            |> LovenseRuleInternals.mergeVariables (LovenseRuleInternals.functionRangeVariables ())
             |> fun variables ->
                 LovenseActionCodec.emptyState
                 |> Map.fold (fun acc name value ->
@@ -464,16 +479,16 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
         | value ->
             LovenseRuleInternals.boolVariable variables value
 
-    let whenMatches input variables (whenValue: string) =
-        if String.IsNullOrWhiteSpace whenValue then
+    let conditionMatches input variables (conditionValue: string) =
+        if String.IsNullOrWhiteSpace conditionValue then
             true
         else
             match input.Position with
-            | Some position when String.Equals(position.Quadrant, whenValue, StringComparison.OrdinalIgnoreCase)
-                                 || String.Equals(position.Zone, whenValue, StringComparison.OrdinalIgnoreCase) ->
+            | Some position when String.Equals(position.Quadrant, conditionValue, StringComparison.OrdinalIgnoreCase)
+                                 || String.Equals(position.Zone, conditionValue, StringComparison.OrdinalIgnoreCase) ->
                 true
             | _ ->
-                match evaluator.Evaluate whenValue variables with
+                match evaluator.Evaluate conditionValue variables with
                 | Ok value -> value <> 0.0
                 | Error _ -> false
 
@@ -499,6 +514,7 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
                     | "BASE" -> { layer with Base = applyLayerOperation target.Operation value layer.Base }
                     | "TIMED" -> { layer with Timed = applyLayerOperation target.Operation value layer.Timed }
                     | "EFFECT" -> { layer with Effect = applyLayerOperation target.Operation value layer.Effect }
+                    | "OTHER" -> { layer with Other = applyLayerOperation target.Operation value layer.Other }
                     | _ -> layer)
                 rule.Name
                 layers
@@ -541,16 +557,22 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
             let enabled =
                 rules
                 |> List.filter (fun rule -> rule.Enabled)
+                |> List.sortBy (fun rule ->
+                    match (rule.Kind |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant() with
+                    | "STATETRANSITION" -> 0
+                    | "BASEMODIFIER" -> 1
+                    | "THRESHOLDMODIFIER" -> 2
+                    | _ -> 3)
 
             let folder (layers, state, diagnostics) (rule: LovenseRuleConfig) =
                 let variables =
                     inputBuilder.Build state input layers
 
-                let ruleWhen =
-                    (String.IsNullOrWhiteSpace rule.When || whenMatches input variables rule.When)
+                let ruleCondition =
+                    (String.IsNullOrWhiteSpace rule.Condition || conditionMatches input variables rule.Condition)
                     && triggerMatches input variables rule.Trigger
 
-                if not ruleWhen then
+                if not ruleCondition then
                     layers, { state with Variables = variables }, diagnostics
                 else
                     let targets =
@@ -563,7 +585,7 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
                         let variables =
                             inputBuilder.Build state input layers
 
-                        if not (whenMatches input variables target.When) then
+                        if not (conditionMatches input variables target.Condition) then
                             layers, { state with Variables = variables }, diagnostics
                         else
                             match evaluator.Evaluate target.Expression variables with
@@ -589,7 +611,7 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
             |> List.fold folder (Map.empty, state, [])
             |> fun (layers, state, diagnostics) -> layers, state, diagnostics |> List.rev
 
-type LovenseCommandBuilder(config: LovenseConfig, interpreter: ILovenseRuleInterpreter) =
+type LovenseCommandValueBuilder(config: LovenseConfig, interpreter: ILovenseRuleInterpreter) =
 
     let mutable state =
         {
@@ -639,16 +661,17 @@ type LovenseCommandBuilder(config: LovenseConfig, interpreter: ILovenseRuleInter
             else
                 let layer = layers |> Map.tryFind fn |> Option.defaultValue LovenseRuleInternals.emptyLayers
                 let raw =
-                    layer.Base * profile.BaseWeight
-                    + layer.Timed * profile.TimedWeight
-                    + layer.Effect * profile.EffectWeight
+                    layer.Base
+                    + layer.Timed
+                    + layer.Effect
+                    + layer.Other
                     |> LovenseRuleInternals.applyCurve profile.Curve
 
                 let final =
                     raw
                     |> Math.Round
                     |> int
-                    |> LovenseFunctionRanges.clampWithProfile fn profile.MinOutput profile.MaxOutput
+                    |> LovenseFunctionRanges.clampWithProfile fn 0 profile.MaxOutput
 
                 Some(fn, { layer with Final = final }))
         |> Map.ofList
@@ -686,7 +709,7 @@ type LovenseCommandBuilder(config: LovenseConfig, interpreter: ILovenseRuleInter
         let temporary =
             functionStates
             |> Map.toList
-            |> List.sumBy (fun (_, layer) -> layer.Timed + layer.Effect)
+            |> List.sumBy (fun (_, layer) -> layer.Timed + layer.Effect + layer.Other)
 
         {
             PerformanceScore = variables |> Map.tryFind "PerformanceScore" |> Option.defaultValue 0.0
@@ -705,7 +728,7 @@ type LovenseCommandBuilder(config: LovenseConfig, interpreter: ILovenseRuleInter
             Intensity = maxFinal
         }
 
-    interface ILovenseCommandBuilder with
+    interface ILovenseCommandValueBuilder with
         member _.Build input =
             let layers, nextState, diagnostics = interpreter.Apply state input config.Mapping.Rules
             let functionStates = materializeLayers layers
