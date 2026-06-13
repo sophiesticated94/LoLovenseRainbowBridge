@@ -212,3 +212,68 @@ penta kill   = +25 for 5s
 
 Each multikill event permanently increases base by `+1`.
 Each death subtracts `ceil(sqrt(nthDeath))` from base.
+
+## Position-based rotation
+
+The bridge supports optional minimap position-based rotation for Lovense toys. When enabled, the application captures the League of Legends minimap at a configured screen region, detects the player's position using OpenCV, and maps the position to rotation values that are sent to the toy.
+
+### Configuration
+
+Enable and configure position-based rotation in `appsettings.json`:
+
+```json
+"PositionBasedRotation": {
+  "Enable": false,
+  "CaptureIntervalMs": 500,
+  "MinimapScreenX": 1700,
+  "MinimapScreenY": 900,
+  "MinimapWidth": 200,
+  "MinimapHeight": 200,
+  "MappingMode": "Combined",
+  "RotationSensitivity": 1.0,
+  "Debug": false
+}
+```
+
+Or via environment variables:
+
+```powershell
+$env:POSITION_BASED_ROTATION__ENABLE="true"
+$env:POSITION_BASED_ROTATION__CAPTURE_INTERVAL_MS="500"
+$env:POSITION_BASED_ROTATION__MINIMAP_SCREEN_X="1700"
+$env:POSITION_BASED_ROTATION__MINIMAP_SCREEN_Y="900"
+$env:POSITION_BASED_ROTATION__MINIMAP_WIDTH="200"
+$env:POSITION_BASED_ROTATION__MINIMAP_HEIGHT="200"
+$env:POSITION_BASED_ROTATION__MAPPING_MODE="Combined"
+$env:POSITION_BASED_ROTATION__ROTATION_SENSITIVITY="1.0"
+$env:POSITION_BASED_ROTATION__DEBUG="false"
+```
+
+### Settings
+
+- **Enable**: Whether position-based rotation is enabled (default: `false`)
+- **CaptureIntervalMs**: How often to capture the minimap in milliseconds (default: `500`)
+- **MinimapScreenX/MinimapScreenY**: Screen coordinates of the minimap's top-left corner (default: `1700, 900` for 1920x1080)
+- **MinimapWidth/MinimapHeight**: Dimensions of the minimap capture region (default: `200x200`)
+- **MappingMode**: Strategy for mapping position to rotation:
+  - `Quadrant`: Maps minimap quadrants to discrete rotation values
+  - `Continuous`: Maps position to continuous rotation based on angle from center
+  - `ZoneBased`: Maps game zones (lanes, jungle) to rotation values
+  - `Combined`: Combines quadrant, continuous, and zone-based approaches (default)
+- **RotationSensitivity**: Multiplier for rotation values (default: `1.0`)
+- **Debug**: Enable debug logging for position detection (default: `false`)
+
+### How it works
+
+1. At the configured interval, the application captures the minimap region from the screen
+2. OpenCV processes the captured image to detect the player position using color-based detection and template matching
+3. The detected position (normalized coordinates 0-1) is mapped to a rotation value based on the selected mapping mode
+4. The rotation value is added to the Lovense command plan as a `Rotate` action
+5. Detection failures are logged but do not interrupt the main runtime loop
+
+### Notes
+
+- The minimap coordinates need to be configured based on your screen resolution and League of Legends client settings
+- The feature uses OpenCvSharp4 for image processing
+- Position detection is currently stubbed with placeholder logic; full implementation requires additional OpenCV configuration
+- Rotation commands are combined with other Lovense actions (vibrate, etc.) in the command plan

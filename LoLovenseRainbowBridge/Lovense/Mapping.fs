@@ -182,6 +182,22 @@ module Mapping =
             ToyId = config.ToyId
         }
 
+    let addRotationToPlan (plan: LovenseCommandPlan) rotationValue =
+        let rotationAction = action Rotate 20 rotationValue
+        {
+            plan with
+                Actions = rotationAction :: plan.Actions
+        }
+
+    let createRotationPlan rotationValue timeSec toyId =
+        {
+            Actions = [ action Rotate 20 rotationValue ]
+            Reasons = [ BasePerformance ]
+            TimeSec = timeSec
+            StopPrevious = true
+            ToyId = toyId
+        }
+
     let plan (config: LovenseConfig) (previousState: GeneratorState) (snapshot: BridgeSnapshot) (evolvedState: GeneratorState) (breakdown: IntensityBreakdown) =
         let intensity =
             breakdown.Intensity |> Shared.clamp 0 config.Mapping.MaxActionIntensity

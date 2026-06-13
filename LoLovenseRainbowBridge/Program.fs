@@ -68,7 +68,7 @@ module Program =
         printfn "Press Ctrl+C to stop."
 
         try
-            Runtime.loop config.Runtime config.Scoring config.Lovense leagueClient lovenseClient logger initialState Runtime.initialFailureState cts.Token
+            Runtime.loop config.Runtime config.Scoring config.Lovense config.PositionBasedRotation leagueClient lovenseClient logger initialState Runtime.initialFailureState Runtime.initialPositionRotationState cts.Token
             |> fun task -> task.GetAwaiter().GetResult()
 
             0

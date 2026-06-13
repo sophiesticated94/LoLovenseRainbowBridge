@@ -83,6 +83,11 @@ type ScoringConfig =
         BaronInitialSpawnSec: float
         BaronRespawnSec: float
         ObjectiveTensionWindowSec: float
+        DeathPressureWindowSec: float
+        DeathPressureBaseLossPercent: float
+        HpChangeThresholdPercent: float
+        BaseRecoveryFloor: float
+        BaseRecoveryTarget: float
     }
 
 type LoggingConfig =
@@ -95,6 +100,19 @@ type LoggingConfig =
         RawLogPrettyPrint: bool
     }
 
+type PositionBasedRotationConfig =
+    {
+        Enable: bool
+        CaptureIntervalMs: int
+        MinimapScreenX: int
+        MinimapScreenY: int
+        MinimapWidth: int
+        MinimapHeight: int
+        MappingMode: string
+        RotationSensitivity: float
+        DebugMode: bool
+    }
+
 type AppConfig =
     {
         League: LeagueConfig
@@ -102,6 +120,7 @@ type AppConfig =
         Runtime: RuntimeConfig
         Scoring: ScoringConfig
         Logging: LoggingConfig
+        PositionBasedRotation: PositionBasedRotationConfig
     }
 
 module Configuration =
@@ -234,9 +253,39 @@ module Configuration =
                 "Scoring.BaronInitialSpawnSec", config.Scoring.BaronInitialSpawnSec
                 "Scoring.BaronRespawnSec", config.Scoring.BaronRespawnSec
                 "Scoring.ObjectiveTensionWindowSec", config.Scoring.ObjectiveTensionWindowSec
+                "Scoring.DeathPressureWindowSec", config.Scoring.DeathPressureWindowSec
             ] do
             if value < 0.0 then
                 invalidArg key $"{key} must be zero or greater."
+
+        if config.Scoring.DeathPressureBaseLossPercent < 0.0 || config.Scoring.DeathPressureBaseLossPercent > 1.0 then
+            invalidArg "Scoring.DeathPressureBaseLossPercent" "Scoring.DeathPressureBaseLossPercent must be in range 0.0..1.0."
+
+        if config.Scoring.HpChangeThresholdPercent < 0.0 || config.Scoring.HpChangeThresholdPercent > 100.0 then
+            invalidArg "Scoring.HpChangeThresholdPercent" "Scoring.HpChangeThresholdPercent must be in range 0.0..100.0."
+
+        if config.Scoring.BaseRecoveryFloor < 0.0 || config.Scoring.BaseRecoveryFloor > 1.0 then
+            invalidArg "Scoring.BaseRecoveryFloor" "Scoring.BaseRecoveryFloor must be in range 0.0..1.0."
+
+        if config.Scoring.BaseRecoveryTarget < 0.0 || config.Scoring.BaseRecoveryTarget > 1.0 then
+            invalidArg "Scoring.BaseRecoveryTarget" "Scoring.BaseRecoveryTarget must be in range 0.0..1.0."
+
+        if config.Scoring.BaseRecoveryTarget < config.Scoring.BaseRecoveryFloor then
+            invalidArg "Scoring.BaseRecoveryTarget" "Scoring.BaseRecoveryTarget cannot be less than Scoring.BaseRecoveryFloor."
+
+        if config.PositionBasedRotation.CaptureIntervalMs <= 0 then
+            invalidArg "PositionBasedRotation.CaptureIntervalMs" "PositionBasedRotation.CaptureIntervalMs must be greater than zero."
+
+        if config.PositionBasedRotation.MinimapWidth <= 0 || config.PositionBasedRotation.MinimapHeight <= 0 then
+            invalidArg "PositionBasedRotation.Minimap" "PositionBasedRotation.Minimap dimensions must be greater than zero."
+
+        let allowedMappingModes = set [ "QUADRANT"; "CONTINUOUS"; "ZONEBASED"; "COMBINED" ]
+
+        if not (allowedMappingModes.Contains(config.PositionBasedRotation.MappingMode.ToUpperInvariant())) then
+            invalidArg "PositionBasedRotation.MappingMode" "PositionBasedRotation.MappingMode must be Quadrant, Continuous, ZoneBased, or Combined."
+
+        if config.PositionBasedRotation.RotationSensitivity < 0.0 || config.PositionBasedRotation.RotationSensitivity > 2.0 then
+            invalidArg "PositionBasedRotation.RotationSensitivity" "PositionBasedRotation.RotationSensitivity must be in range 0.0..2.0."
 
         let allowedLogLevels = set [ "TRACE"; "DEBUG"; "INFO"; "WARN"; "ERROR" ]
 
@@ -337,6 +386,11 @@ module Configuration =
                     BaronInitialSpawnSec = floatValue root "Scoring:BaronInitialSpawnSec"
                     BaronRespawnSec = floatValue root "Scoring:BaronRespawnSec"
                     ObjectiveTensionWindowSec = floatValue root "Scoring:ObjectiveTensionWindowSec"
+                    DeathPressureWindowSec = floatValue root "Scoring:DeathPressureWindowSec"
+                    DeathPressureBaseLossPercent = floatValue root "Scoring:DeathPressureBaseLossPercent"
+                    HpChangeThresholdPercent = floatValue root "Scoring:HpChangeThresholdPercent"
+                    BaseRecoveryFloor = floatValue root "Scoring:BaseRecoveryFloor"
+                    BaseRecoveryTarget = floatValue root "Scoring:BaseRecoveryTarget"
                 }
 
             Logging =
@@ -348,6 +402,19 @@ module Configuration =
                     LogRawLovense = boolValue root "Logging:LogRawLovense"
                     RawLogPrettyPrint = boolValue root "Logging:RawLogPrettyPrint"
                 }
+
+            PositionBasedRotation =
+                {
+                    Enable = boolValue root "PositionBasedRotation:Enable"
+                    CaptureIntervalMs = intValue root "PositionBasedRotation:CaptureIntervalMs"
+                    MinimapScreenX = intValue root "PositionBasedRotation:MinimapScreenX"
+                    MinimapScreenY = intValue root "PositionBasedRotation:MinimapScreenY"
+                    MinimapWidth = intValue root "PositionBasedRotation:MinimapWidth"
+                    MinimapHeight = intValue root "PositionBasedRotation:MinimapHeight"
+                    MappingMode = requiredValue root "PositionBasedRotation:MappingMode"
+                    RotationSensitivity = floatValue root "PositionBasedRotation:RotationSensitivity"
+                    DebugMode = boolValue root "PositionBasedRotation:DebugMode"
+                }
         }
 
         {
@@ -358,6 +425,11 @@ module Configuration =
                             AuthToken = legacyEnv "LOVENSE_AUTH_TOKEN" |> Option.orElse loaded.Lovense.AuthToken
                             ToyId = legacyEnv "LOVENSE_TOY_ID" |> Option.orElse loaded.Lovense.ToyId
                             DryRun = legacyBool "DRY_RUN" loaded.Lovense.DryRun
+                    }
+                PositionBasedRotation =
+                    {
+                        loaded.PositionBasedRotation with
+                            Enable = legacyBool "POSITION_ROTATION_ENABLE" loaded.PositionBasedRotation.Enable
                     }
         }
         |> validate

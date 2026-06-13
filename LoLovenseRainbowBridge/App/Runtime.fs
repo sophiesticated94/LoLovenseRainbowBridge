@@ -8,6 +8,9 @@ open LoLovenseRainbowBridge.Bridge
 open LoLovenseRainbowBridge.Bridge.Scoring
 open LoLovenseRainbowBridge.LeagueOfLegends
 open LoLovenseRainbowBridge.Lovense
+open LoLovenseRainbowBridge.ScreenCapture
+open LoLovenseRainbowBridge.MinimapDetector
+open LoLovenseRainbowBridge.PositionMapping
 
 module Runtime =
 
@@ -21,6 +24,12 @@ module Runtime =
             LastSuccessfulLovenseAt: DateTimeOffset option
         }
 
+    type PositionRotationState =
+        {
+            LastCaptureTime: DateTimeOffset option
+            DetectionFailures: int
+        }
+
     let initialFailureState =
         {
             LeagueFailureAttemptsSinceSuccess = 0
@@ -29,6 +38,12 @@ module Runtime =
             LastLovenseError = None
             LastSuccessfulLeagueAt = None
             LastSuccessfulLovenseAt = None
+        }
+
+    let initialPositionRotationState =
+        {
+            LastCaptureTime = None
+            DetectionFailures = 0
         }
 
     let private recordLeagueFailure error failureState =
@@ -171,11 +186,13 @@ module Runtime =
         (runtimeConfig: RuntimeConfig)
         (scoringConfig: ScoringConfig)
         (lovenseConfig: LovenseConfig)
+        (positionRotationConfig: PositionBasedRotationConfig)
         (leagueClient: LeagueLiveClient)
         (lovenseClient: LovenseClient)
         (logger: StructuredSessionLogger)
         (state: GeneratorState)
         (failureState: ConnectionFailureState)
+        (positionRotationState: PositionRotationState)
         (ct: CancellationToken)
         : Task<unit>
         =
@@ -204,7 +221,7 @@ module Runtime =
 
                     let! nextState, nextFailureState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger state nextFailureState ct
                     do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
-                    return! loop runtimeConfig scoringConfig lovenseConfig leagueClient lovenseClient logger nextState nextFailureState ct
+                    return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger nextState nextFailureState positionRotationState ct
 
                 | Ok gameData ->
                     match Parser.parseGameSnapshotResult gameData.Root with
@@ -225,7 +242,7 @@ module Runtime =
 
                         let! nextState, nextFailureState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger state nextFailureState ct
                         do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
-                        return! loop runtimeConfig scoringConfig lovenseConfig leagueClient lovenseClient logger nextState nextFailureState ct
+                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger nextState nextFailureState positionRotationState ct
 
                     | Ok parsed ->
                         let now = DateTimeOffset.UtcNow
@@ -236,6 +253,85 @@ module Runtime =
                         let breakdown = computeIntensityBreakdown scoringConfig snapshot evolved
                         let intensity = breakdown.Intensity
                         let commandPlan = Mapping.plan lovenseConfig state snapshot evolved breakdown
+
+                        let commandPlanWithRotation =
+                            if positionRotationConfig.Enable then
+                                let shouldCapture =
+                                    match positionRotationState.LastCaptureTime with
+                                    | None -> true
+                                    | Some lastTime ->
+                                        (now - lastTime).TotalMilliseconds >= float positionRotationConfig.CaptureIntervalMs
+
+                                if shouldCapture then
+                                    try
+                                        let minimapRegion =
+                                            {
+                                                X = positionRotationConfig.MinimapScreenX
+                                                Y = positionRotationConfig.MinimapScreenY
+                                                Width = positionRotationConfig.MinimapWidth
+                                                Height = positionRotationConfig.MinimapHeight
+                                            }
+                                        
+                                        let captureResult = ScreenCapture.captureLeagueMinimap minimapRegion
+                                        let template = MinimapDetector.createDefaultTemplate ()
+                                        let detectionResult = MinimapDetector.detectPlayerPosition captureResult template
+                                        
+                                        let nextPositionRotationState =
+                                            {
+                                                positionRotationState with
+                                                    LastCaptureTime = Some now
+                                                    DetectionFailures = if detectionResult.Position.IsNone then positionRotationState.DetectionFailures + 1 else 0
+                                            }
+                                        
+                                        match detectionResult.Position with
+                                        | Some playerPosition ->
+                                            let mappingMode = PositionMapping.parseMappingMode positionRotationConfig.MappingMode
+                                            match mappingMode with
+                                            | Some mode ->
+                                                let rotationResult = PositionMapping.mapPositionToRotation playerPosition mode positionRotationConfig.RotationSensitivity
+                                                let enhancedPlan = Mapping.addRotationToPlan commandPlan rotationResult.RotationValue
+                                                
+                                                logger.Info(
+                                                    "runtime.position_rotation.success",
+                                                    "Position-based rotation applied.",
+                                                    {|
+                                                        normalizedX = playerPosition.NormalizedX
+                                                        normalizedY = playerPosition.NormalizedY
+                                                        rotationValue = rotationResult.RotationValue
+                                                        mappingMethod = rotationResult.MappingMethod
+                                                        zone = string rotationResult.Zone
+                                                    |}
+                                                )
+                                                
+                                                enhancedPlan, nextPositionRotationState
+                                            | None ->
+                                                logger.Warn(
+                                                    "runtime.position_rotation.invalid_mode",
+                                                    "Invalid mapping mode in configuration.",
+                                                    {| mode = positionRotationConfig.MappingMode |}
+                                                )
+                                                commandPlan, nextPositionRotationState
+                                        | None ->
+                                            logger.Debug(
+                                                "runtime.position_rotation.no_detection",
+                                                "No player position detected in minimap.",
+                                                {| detectionMethod = detectionResult.DetectionMethod |}
+                                            )
+                                            commandPlan, nextPositionRotationState
+                                    with ex ->
+                                        logger.Error(
+                                            "runtime.position_rotation.error",
+                                            "Error during position-based rotation detection.",
+                                            {| error = ex.Message |}
+                                        )
+                                        commandPlan, positionRotationState
+                                else
+                                    commandPlan, positionRotationState
+                            else
+                                commandPlan, positionRotationState
+
+                        let commandPlan = fst commandPlanWithRotation
+                        let positionRotationState = snd commandPlanWithRotation
                         let actionString = Mapping.planActionString commandPlan
 
                         logger.Info(
@@ -371,7 +467,7 @@ module Runtime =
                         let nextGeneratorState, nextFailureState, delayMs = nextState
 
                         do! Task.Delay(delayMs, ct)
-                        return! loop runtimeConfig scoringConfig lovenseConfig leagueClient lovenseClient logger nextGeneratorState nextFailureState ct
+                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger nextGeneratorState nextFailureState positionRotationState ct
 
             with
             | :? OperationCanceledException ->
@@ -392,5 +488,5 @@ module Runtime =
                 let! nextState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger state failureState ct
                 do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
                 let nextGeneratorState, nextFailureState = nextState
-                return! loop runtimeConfig scoringConfig lovenseConfig leagueClient lovenseClient logger nextGeneratorState nextFailureState ct
+                return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger nextGeneratorState nextFailureState positionRotationState ct
         }

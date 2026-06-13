@@ -71,10 +71,10 @@ type GeneratorState =
 and HealthPressureState =
     {
         PressureMultiplier: float
-        SegmentHighHpPercent: float option
-        SegmentLowHpPercent: float option
-        AppliedRecoveryPercentInSegment: float
-        SegmentStartPressureMultiplier: float
+        DeathPressureActive: bool
+        DeathPressureStartTime: float option
+        BaseBeforeDeath: float option
+        LastHpPercent: float option
     }
 
 type TemporaryEffectKind =
@@ -122,10 +122,10 @@ module Scoring =
             HealthPressure =
                 {
                     PressureMultiplier = 1.0
-                    SegmentHighHpPercent = None
-                    SegmentLowHpPercent = None
-                    AppliedRecoveryPercentInSegment = 0.0
-                    SegmentStartPressureMultiplier = 1.0
+                    DeathPressureActive = false
+                    DeathPressureStartTime = None
+                    BaseBeforeDeath = None
+                    LastHpPercent = None
                 }
             LastSent = None
             LastSentCommand = None
@@ -210,6 +210,90 @@ module Scoring =
         |> List.filter (fun pulse ->
             not (pulse.ProvisionalSingleKill && abs (pulse.CreatedAt - eventTime) <= config.ProvisionalSingleKillWindowSec))
 
+    module HealthPressureCalculator =
+        let handleDeath config currentTime (state: HealthPressureState) =
+            {
+                state with
+                    DeathPressureActive = true
+                    DeathPressureStartTime = Some currentTime
+                    BaseBeforeDeath = Some state.PressureMultiplier
+                    PressureMultiplier = state.PressureMultiplier * (1.0 - config.DeathPressureBaseLossPercent)
+            }
+
+        let handleKillDuringPressure (state: HealthPressureState) =
+            match state.BaseBeforeDeath with
+            | Some baseBeforeDeath ->
+                {
+                    state with
+                        DeathPressureActive = false
+                        DeathPressureStartTime = None
+                        BaseBeforeDeath = None
+                        PressureMultiplier = baseBeforeDeath
+                }
+            | None ->
+                state
+
+        let checkPressureWindowExpiry config currentTime (state: HealthPressureState) =
+            if state.DeathPressureActive then
+                match state.DeathPressureStartTime with
+                | Some startTime ->
+                    if currentTime - startTime >= config.DeathPressureWindowSec then
+                        {
+                            state with
+                                DeathPressureActive = false
+                                DeathPressureStartTime = None
+                                BaseBeforeDeath = None
+                                PressureMultiplier = state.PressureMultiplier * (1.0 - config.DeathPressureBaseLossPercent)
+                        }
+                    else
+                        state
+                | None ->
+                    state
+            else
+                state
+
+        let calculateBaseRecovery config healthPercent =
+            if healthPercent <= 0.0 then
+                config.BaseRecoveryFloor
+            elif healthPercent >= 1.0 then
+                config.BaseRecoveryTarget
+            elif healthPercent <= 0.5 then
+                let ratio = healthPercent / 0.5
+                config.BaseRecoveryFloor + (config.BaseRecoveryTarget - config.BaseRecoveryFloor) * ratio
+            else
+                let ratio = (healthPercent - 0.5) / 0.5
+                let baseAt50 = config.BaseRecoveryTarget
+                let targetAt100 = (config.BaseRecoveryTarget + 1.0) / 2.0
+                baseAt50 + (targetAt100 - baseAt50) * ratio
+
+        let update config currentTime hp (state: HealthPressureState) =
+            let stateWithWindowCheck = checkPressureWindowExpiry config currentTime state
+
+            match hp with
+            | None ->
+                stateWithWindowCheck
+
+            | Some currentHp ->
+                let threshold = config.HpChangeThresholdPercent / 100.0
+
+                match stateWithWindowCheck.LastHpPercent with
+                | None ->
+                    { stateWithWindowCheck with LastHpPercent = Some currentHp }
+
+                | Some lastHp ->
+                    let delta = currentHp - lastHp
+                    let absDelta = abs delta
+
+                    if absDelta >= threshold then
+                        let recoveryMultiplier = calculateBaseRecovery config currentHp
+                        {
+                            stateWithWindowCheck with
+                                PressureMultiplier = recoveryMultiplier
+                                LastHpPercent = Some currentHp
+                        }
+                    else
+                        { stateWithWindowCheck with LastHpPercent = Some currentHp }
+
     let private applyEvent config activeAliases state ev =
         if state.SeenEventIds.Contains ev.EventId then
             state
@@ -217,11 +301,23 @@ module Scoring =
             let stateWithSeen =
                 { state with SeenEventIds = state.SeenEventIds.Add ev.EventId }
 
+            let stateWithDeathPressure =
+                if nameMatches activeAliases ev.VictimName then
+                    { stateWithSeen with HealthPressure = HealthPressureCalculator.handleDeath config ev.GameTime stateWithSeen.HealthPressure }
+                else
+                    stateWithSeen
+
             if not (nameMatches activeAliases ev.ActorName) then
-                stateWithSeen
+                stateWithDeathPressure
             else
                 match ev.Kind with
                 | ChampionKill ->
+                    let stateWithKillRecovery =
+                        if stateWithDeathPressure.HealthPressure.DeathPressureActive then
+                            { stateWithDeathPressure with HealthPressure = HealthPressureCalculator.handleKillDuringPressure stateWithDeathPressure.HealthPressure }
+                        else
+                            stateWithDeathPressure
+
                     let pulse =
                         {
                             Value = config.SingleKillPulseValue
@@ -230,9 +326,15 @@ module Scoring =
                             ProvisionalSingleKill = true
                         }
 
-                    { stateWithSeen with Pulses = pulse :: stateWithSeen.Pulses }
+                    { stateWithKillRecovery with Pulses = pulse :: stateWithKillRecovery.Pulses }
 
                 | Multikill streak ->
+                    let stateWithKillRecovery =
+                        if stateWithDeathPressure.HealthPressure.DeathPressureActive then
+                            { stateWithDeathPressure with HealthPressure = HealthPressureCalculator.handleKillDuringPressure stateWithDeathPressure.HealthPressure }
+                        else
+                            stateWithDeathPressure
+
                     let safeStreak = streak |> Shared.clamp config.MinMultikillStreak config.MaxMultikillStreak
 
                     let pulse =
@@ -244,21 +346,21 @@ module Scoring =
                         }
 
                     {
-                        stateWithSeen with
+                        stateWithKillRecovery with
                             Pulses =
-                                stateWithSeen.Pulses
+                                stateWithKillRecovery.Pulses
                                 |> removeRecentProvisionalSingleKills config ev.GameTime
                                 |> fun pulses -> pulse :: pulses
 
-                            MultikillCount = stateWithSeen.MultikillCount + 1
+                            MultikillCount = stateWithKillRecovery.MultikillCount + 1
                     }
 
                 | ObjectiveKill _
                 | Ace _ ->
-                    stateWithSeen
+                    stateWithDeathPressure
 
                 | Other _ ->
-                    stateWithSeen
+                    stateWithDeathPressure
 
     let evolve config snapshot state =
         let withoutExpiredPulses =
@@ -279,69 +381,9 @@ module Scoring =
             | Some healthPercent -> config.HealthMinMultiplier + (1.0 - config.HealthMinMultiplier) * healthPercent
             | None -> 1.0
 
-    module HealthPressureCalculator =
-        let update config hp (state: HealthPressureState) =
-            match hp with
-            | None ->
-                state
-
-            | Some currentHp ->
-                let threshold = config.HealthPressureDropThresholdPercent / 100.0
-
-                match state.SegmentHighHpPercent, state.SegmentLowHpPercent with
-                | None, _ ->
-                    { state with SegmentHighHpPercent = Some currentHp }
-
-                | Some high, None ->
-                    if currentHp >= high then
-                        { state with SegmentHighHpPercent = Some currentHp }
-                    elif high - currentHp >= threshold then
-                        {
-                            state with
-                                SegmentLowHpPercent = Some currentHp
-                                AppliedRecoveryPercentInSegment = 0.0
-                                SegmentStartPressureMultiplier = state.PressureMultiplier
-                        }
-                    else
-                        state
-
-                | Some high, Some low ->
-                    if currentHp < low then
-                        {
-                            state with
-                                SegmentLowHpPercent = Some currentHp
-                                AppliedRecoveryPercentInSegment = 0.0
-                                SegmentStartPressureMultiplier = state.PressureMultiplier
-                        }
-                    else
-                        let lost = high - low
-
-                        if lost <= 0.0 then
-                            { state with SegmentHighHpPercent = Some currentHp; SegmentLowHpPercent = None; AppliedRecoveryPercentInSegment = 0.0; SegmentStartPressureMultiplier = state.PressureMultiplier }
-                        else
-                            let recoveredTotal = (currentHp - low) |> Shared.clamp 0.0 lost
-                            let totalRegainFraction = (recoveredTotal / lost) |> Shared.clamp01
-                            let scarFactor = 1.0 - ((1.0 - config.FullRegainPressureFactor) * totalRegainFraction)
-                            let pressureMultiplier = state.SegmentStartPressureMultiplier * scarFactor
-
-                            if currentHp >= high then
-                                {
-                                    PressureMultiplier = pressureMultiplier
-                                    SegmentHighHpPercent = Some currentHp
-                                    SegmentLowHpPercent = None
-                                    AppliedRecoveryPercentInSegment = 0.0
-                                    SegmentStartPressureMultiplier = pressureMultiplier
-                                }
-                            else
-                                {
-                                    state with
-                                        PressureMultiplier = pressureMultiplier
-                                        AppliedRecoveryPercentInSegment = recoveredTotal
-                                }
-
     let updateHealthPressure config snapshot state =
         let nextHealthPressure =
-            HealthPressureCalculator.update config (healthPercent snapshot) state.HealthPressure
+            HealthPressureCalculator.update config snapshot.GameTime (healthPercent snapshot) state.HealthPressure
 
         { state with HealthPressure = nextHealthPressure }
 
