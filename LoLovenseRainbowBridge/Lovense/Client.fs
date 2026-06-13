@@ -59,12 +59,64 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
     let mutable socket: SocketIO option = None
     let mutable socketInfo: SocketUrlInfo option = None
     let mutable qrCodeLogged = false
+    let mutable supportedFunctions: Set<string> option = None
 
     let invariantFloat (value: float) =
         value.ToString(CultureInfo.InvariantCulture)
 
     let escapeJsonString (value: string) =
         value.Replace("\\", "\\\\").Replace("\"", "\\\"")
+
+    let knownFunctionNames =
+        set
+            [
+                Constants.Lovense.VibrateAction
+                Constants.Lovense.RotateAction
+                Constants.Lovense.PumpAction
+                Constants.Lovense.ThrustingAction
+                Constants.Lovense.FingeringAction
+                Constants.Lovense.SuctionAction
+                Constants.Lovense.DepthAction
+                Constants.Lovense.StrokeAction
+                Constants.Lovense.OscillateAction
+                Constants.Lovense.AllAction
+                Constants.Lovense.StopAction
+            ]
+
+    let tryExtractSupportedFunctions (rawText: string) =
+        let rec collect (node: JsonNode) =
+            if isNull node then
+                Set.empty
+            else
+                match node with
+                | :? JsonValue as value ->
+                    try
+                        let text = value.GetValue<string>()
+
+                        knownFunctionNames
+                        |> Seq.filter (fun name -> text.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
+                        |> Set.ofSeq
+                    with _ ->
+                        Set.empty
+                | :? JsonArray as array ->
+                    array
+                    |> Seq.choose (fun item -> if isNull item then None else Some item)
+                    |> Seq.map collect
+                    |> Seq.fold Set.union Set.empty
+                | :? JsonObject as object ->
+                    object
+                    |> Seq.choose (fun pair -> if isNull pair.Value then None else Some pair.Value)
+                    |> Seq.map collect
+                    |> Seq.fold Set.union Set.empty
+                | _ ->
+                    Set.empty
+
+        try
+            let root = JsonNode.Parse(rawText)
+            let functions = collect root
+            if functions.IsEmpty then None else Some functions
+        with _ ->
+            None
 
     let createCommandPayload (plan: LovenseCommandPlan) correlationId =
         let toyPart =
@@ -183,6 +235,25 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
 
     let logSocketEvent eventName correlationId (ctx: IEventContext) =
         let raw = ctx.RawText
+
+        if eventName = Constants.Lovense.DeviceInfoListen then
+            match tryExtractSupportedFunctions raw with
+            | Some functions ->
+                supportedFunctions <- Some functions
+                logger.Info(
+                    "lovense.capabilities.updated",
+                    "Updated Lovense supported function set from device info.",
+                    {|
+                        correlationId = correlationId
+                        supportedFunctions = functions |> Set.toList
+                    |}
+                )
+            | None ->
+                logger.Warn(
+                    "lovense.capabilities.unknown",
+                    "Lovense device info did not expose supported function names.",
+                    {| correlationId = correlationId |}
+                )
 
         logger.RawLovenseSocketEvent(correlationId, eventName, "receive", raw)
 
@@ -386,8 +457,11 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
         task {
             let safeValue = requestedValue |> Shared.clamp scoringConfig.MinIntensity scoringConfig.MaxIntensity
             let correlationId = Guid.NewGuid().ToString("N")
-            let payload = createCommandPayload plan correlationId
-            let actionString = Mapping.planActionString plan
+            let candidateActionString = Mapping.planActionString plan
+            let filteredPlan, droppedActions = Mapping.filterByCapabilities config supportedFunctions plan
+            let payload = createCommandPayload filteredPlan correlationId
+            let actionString = Mapping.planActionString filteredPlan
+            let commandReasons = filteredPlan.Reasons |> List.map Mapping.reasonToString
 
             if config.DryRun then
                 logger.Info(
@@ -399,7 +473,10 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                         safeValue = safeValue
                         eventName = Constants.Lovense.SendToyCommandEmit
                         action = actionString
-                        reasons = plan.Reasons |> List.map Mapping.reasonToString
+                        candidateAction = candidateActionString
+                        droppedActions = droppedActions
+                        reasons = commandReasons
+                        capabilitySource = if supportedFunctions.IsSome then "deviceInfo" elif config.Mapping.ForceSupportedFunctions.IsEmpty then "unknown" else "config"
                         rawLogged = logger.IsRawLovenseEnabled
                     |}
                 )
@@ -445,7 +522,10 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                                     safeValue = safeValue
                                     eventName = Constants.Lovense.SendToyCommandEmit
                                     action = actionString
-                                    reasons = plan.Reasons |> List.map Mapping.reasonToString
+                                    candidateAction = candidateActionString
+                                    droppedActions = droppedActions
+                                    reasons = commandReasons
+                                    capabilitySource = if supportedFunctions.IsSome then "deviceInfo" elif config.Mapping.ForceSupportedFunctions.IsEmpty then "unknown" else "config"
                                     payloadLength = payload.Length
                                     rawLogged = logger.IsRawLovenseEnabled
                                 |}

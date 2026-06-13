@@ -132,6 +132,9 @@ module Constants =
         let Scores = "scores"
 
         [<Literal>]
+        let ChampionStats = "championStats"
+
+        [<Literal>]
         let RiotId = "riotId"
 
         [<Literal>]
@@ -162,6 +165,12 @@ module Constants =
         let Level = "level"
 
         [<Literal>]
+        let CurrentHealth = "currentHealth"
+
+        [<Literal>]
+        let MaxHealth = "maxHealth"
+
+        [<Literal>]
         let GameTime = "gameTime"
 
         [<Literal>]
@@ -182,9 +191,48 @@ module Constants =
         [<Literal>]
         let KillStreak = "KillStreak"
 
+        [<Literal>]
+        let Assisters = "Assisters"
+
+        [<Literal>]
+        let DragonType = "DragonType"
+
+        [<Literal>]
+        let Stolen = "Stolen"
+
+        [<Literal>]
+        let TurretKilled = "TurretKilled"
+
+        [<Literal>]
+        let InhibKilled = "InhibKilled"
+
+        [<Literal>]
+        let Acer = "Acer"
+
+        [<Literal>]
+        let AcingTeam = "AcingTeam"
+
     module RiotEvents =
         [<Literal>]
         let ChampionKill = "ChampionKill"
 
         [<Literal>]
         let Multikill = "Multikill"
+
+        [<Literal>]
+        let DragonKill = "DragonKill"
+
+        [<Literal>]
+        let HeraldKill = "HeraldKill"
+
+        [<Literal>]
+        let BaronKill = "BaronKill"
+
+        [<Literal>]
+        let TurretKilled = "TurretKilled"
+
+        [<Literal>]
+        let InhibKilled = "InhibKilled"
+
+        [<Literal>]
+        let Ace = "Ace"

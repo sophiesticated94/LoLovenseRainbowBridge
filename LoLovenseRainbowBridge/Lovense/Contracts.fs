@@ -29,6 +29,13 @@ type LovenseCommandReason =
     | DeathReset
     | AssistSupportTexture
     | HighMomentumTexture
+    | ObjectiveWave
+    | TeamfightBurst
+    | AceBurst
+    | HeartbeatNearDeath
+    | LaningTexture
+    | JungleTensionRamp
+    | CapabilityFiltered of droppedActions: string list
     | StopCommand
 
 type LovenseCommandPlan =

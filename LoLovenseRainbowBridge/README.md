@@ -99,11 +99,10 @@ The bridge can run in two Lovense mapping modes:
 `MultiFunction` builds richer Lovense Function actions from the LoL state:
 
 - baseline performance drives `Vibrate`
-- active kill pulses can add `Rotate` or `All`
-- kills and multikills can create short burst-style command plans
-- high sustained intensity can add `All`, `Pump`, and `Depth`
-- assists and ward score can add softer `Oscillate`/`Suction` texture
-- deaths can send a stop/reset plan when `EnableDeathStop=true`
+- the stable base is capped at `Scoring.BaseIntensityCap` (`18` by default)
+- temporary effects can push the final output to `19` or `20`
+- kills, multikills, objectives, teamfights, low HP, laning, and objective timing all produce typed calculator effects
+- unsupported Lovense functions can be filtered from the final command plan when device capabilities are known
 
 Actual toy behavior depends on the connected toy. If a toy does not support a
 function, Lovense Remote may ignore that function. `EnableStrokeActions` is off
@@ -121,6 +120,57 @@ dotnet run
 Generated command plans are written to `track.log`; raw socket payloads are
 written to `lovense.log` only when `LOGGING__LOGRAWLOVENSE=true`.
 
+## Calculators
+
+The bridge intentionally keeps the LoL-to-Lovense logic as calculator-style
+domain code. Runtime orchestration fetches data, updates state, logs breakdowns,
+and sends the selected command; the math lives in pure functions.
+
+Main calculated values:
+
+- `rawBaseValue`: normalized performance, multikill base, and death penalty
+- `liveHealthMultiplier`: interpolated from current HP, default `0.5..1.0`
+- `healthPressureMultiplier`: persistent recovery scar multiplier
+- `healthAdjustedBaseValue`: base value after HP modifiers
+- `baseIntensity`: rounded/capped stable base, default max `18`
+- `temporaryBoost`: sum of active temporary effects
+- `finalIntensity`: `baseIntensity + temporaryBoost`, clamped to `0..20`
+
+Health pressure modifies base value only. When HP is lost and then regained, the
+regained part creates a permanent multiplier scar for the current session:
+
+```text
+scarFactor = 1.0 - ((1.0 - FullRegainPressureFactor) * regainedFraction)
+```
+
+With the default `FullRegainPressureFactor = 0.8`, regaining 25%, 50%, 75%, or
+100% of a lost segment applies factors `0.95`, `0.90`, `0.85`, and `0.80`.
+Repeated regains compound naturally.
+
+Temporary effects include:
+
+- objective waves for dragon, elder, herald, Baron, turret, inhibitor, and stolen objectives
+- teamfight bursts from clustered champion kills and ace events
+- heartbeat texture under low or critical HP
+- restrained laning texture before `LaningPhaseEndSec`
+- jungle/objective tension ramps before inferred spawn windows
+
+Capability filtering is controlled by:
+
+```json
+"Lovense": {
+  "Mapping": {
+    "EnableCapabilityFiltering": true,
+    "UnknownCapabilityMode": "SafeUniversal",
+    "ForceSupportedFunctions": []
+  }
+}
+```
+
+When capability is unknown, `SafeUniversal` keeps only `Vibrate`, `All`, and
+`Stop`. If Lovense device info exposes supported functions, unsupported actions
+are dropped and the filtered plan is logged in `track.log`.
+
 ## Build
 
 ```powershell
@@ -137,10 +187,14 @@ The project targets `net10.0`. If your local SDK only supports preview .NET 11, 
 
 ```text
 intensity = clamp(
-    5 * normalizedPerformance
-    + totalMultikills
-    - Σ ceil(sqrt(deathIndex))
-    + activeKillPulses,
+    clamp(
+      (5 * normalizedPerformance + totalMultikills - Σ ceil(sqrt(deathIndex)))
+      * liveHealthMultiplier
+      * healthPressureMultiplier,
+      0,
+      BaseIntensityCap
+    )
+    + temporaryBoost,
     0,
     20
 )

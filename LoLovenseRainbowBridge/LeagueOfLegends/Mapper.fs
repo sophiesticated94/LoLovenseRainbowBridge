@@ -15,6 +15,8 @@ module Mapper =
             CreepScore = player.CreepScore
             WardScore = player.WardScore
             Level = player.Level
+            CurrentHealth = player.CurrentHealth
+            MaxHealth = player.MaxHealth
         }
 
     let private toBridgeEventKind (config: ScoringConfig) (ev: LolEvent) =
@@ -26,6 +28,24 @@ module Mapper =
             let streak = ev.KillStreak |> Option.defaultValue config.MinMultikillStreak
             Multikill streak
 
+        | Constants.RiotEvents.DragonKill ->
+            ObjectiveKill(Dragon ev.DragonType, ev.Stolen)
+
+        | Constants.RiotEvents.HeraldKill ->
+            ObjectiveKill(Herald, ev.Stolen)
+
+        | Constants.RiotEvents.BaronKill ->
+            ObjectiveKill(Baron, ev.Stolen)
+
+        | Constants.RiotEvents.TurretKilled ->
+            ObjectiveKill(Turret ev.TurretKilled, None)
+
+        | Constants.RiotEvents.InhibKilled ->
+            ObjectiveKill(Inhibitor ev.InhibKilled, None)
+
+        | Constants.RiotEvents.Ace ->
+            Ace ev.AcingTeam
+
         | other ->
             Other other
 
@@ -33,8 +53,9 @@ module Mapper =
         {
             EventId = ev.EventId
             GameTime = ev.EventTime
-            ActorName = ev.KillerName
+            ActorName = ev.KillerName |> Option.orElse ev.Acer
             VictimName = ev.VictimName
+            Assisters = ev.Assisters
             Kind = toBridgeEventKind config ev
         }
 

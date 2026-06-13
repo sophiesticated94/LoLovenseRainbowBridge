@@ -105,14 +105,14 @@ module Runtime =
 
     let private printStatus (snapshot: BridgeSnapshot) (state: GeneratorState) (breakdown: IntensityBreakdown) =
         printfn
-            "t=%6.1fs | K/D/A=%i/%i/%i | norm=%.2f | multikills=%i | pulse=%i | output=%i"
+            "t=%6.1fs | K/D/A=%i/%i/%i | norm=%.2f | multikills=%i | temp=%i | output=%i"
             snapshot.GameTime
             snapshot.ActivePlayer.Kills
             snapshot.ActivePlayer.Deaths
             snapshot.ActivePlayer.Assists
             breakdown.NormalizedScore
             state.MultikillCount
-            breakdown.ActivePulseBoost
+            breakdown.TemporaryBoost
             breakdown.Intensity
 
     let private handleUnavailable
@@ -232,7 +232,7 @@ module Runtime =
                         let failureAfterLeagueSuccess = recordLeagueSuccess now failureState
                         let lolSnapshot = parsed.Snapshot
                         let snapshot = Mapper.toBridgeSnapshot scoringConfig lolSnapshot
-                        let evolved = evolve scoringConfig snapshot state
+                        let evolved = evolve scoringConfig snapshot state |> updateHealthPressure scoringConfig snapshot
                         let breakdown = computeIntensityBreakdown scoringConfig snapshot evolved
                         let intensity = breakdown.Intensity
                         let commandPlan = Mapping.plan lovenseConfig state snapshot evolved breakdown
@@ -270,6 +270,8 @@ module Runtime =
                                         creepScore = snapshot.ActivePlayer.CreepScore
                                         wardScore = snapshot.ActivePlayer.WardScore
                                         level = snapshot.ActivePlayer.Level
+                                        currentHealth = snapshot.ActivePlayer.CurrentHealth
+                                        maxHealth = snapshot.ActivePlayer.MaxHealth
                                     |}
                                 state =
                                     {|
@@ -278,10 +280,27 @@ module Runtime =
                                         previousPulseCount = state.Pulses.Length
                                         evolvedPulseCount = evolved.Pulses.Length
                                         multikillCount = evolved.MultikillCount
+                                        healthPressure = evolved.HealthPressure
                                         lastSent = evolved.LastSent
                                         lastSentCommand = evolved.LastSentCommand
                                     |}
-                                breakdown = breakdown
+                                breakdown =
+                                    {|
+                                        performanceScore = breakdown.PerformanceScore
+                                        normalizedScore = breakdown.NormalizedScore
+                                        multikillBase = breakdown.MultikillBase
+                                        deathPenalty = breakdown.DeathPenalty
+                                        rawBaseValue = breakdown.RawBaseValue
+                                        liveHealthPercent = breakdown.LiveHealthPercent
+                                        liveHealthMultiplier = breakdown.LiveHealthMultiplier
+                                        healthPressureMultiplier = breakdown.HealthPressureMultiplier
+                                        healthAdjustedBaseValue = breakdown.HealthAdjustedBaseValue
+                                        baseIntensity = breakdown.BaseIntensity
+                                        temporaryBoost = breakdown.TemporaryBoost
+                                        temporaryEffects = breakdown.TemporaryEffects |> List.map temporaryEffectLog
+                                        rawFinalValue = breakdown.RawFinalValue
+                                        intensity = breakdown.Intensity
+                                    |}
                                 commandPlan =
                                     {|
                                         action = actionString

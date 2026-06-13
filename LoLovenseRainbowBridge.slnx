@@ -1,3 +1,4 @@
 <Solution>
   <Project Path="LoLovenseRainbowBridge/LoLovenseRainbowBridge.fsproj" />
+  <Project Path="LoLovenseRainbowBridge.Tests/LoLovenseRainbowBridge.Tests.fsproj" />
 </Solution>

@@ -1,75 +1,80 @@
 # Propositions
 
-Ideas for making the bridge more expressive over time.
+Ideas for future versions after the calculator-driven bridge.
 
-## Spatial Map Feel
+## Champion Identity Profiles
 
-The dream: the player being on the right side of the map could bias the response
-toward a "right-side" toy or function, while upper-right could combine a right
-texture with a lighter upper/ascending texture.
+Give each champion a different response vocabulary:
 
-Current blocker: the League Live Client data currently parsed by this app does
-not expose reliable active-player map coordinates. The bridge should not pretend
-to know position without a real data source.
+- assassins: sharp short spikes after kills
+- tanks: slower pressure ramps during long fights
+- supports: softer assist and vision textures
+- marksmen: scaling intensity tied to CS and late-game time
 
-Possible paths:
+This would need a small champion-profile config keyed by champion name.
 
-- Parse another reliable game-state source if Riot exposes coordinates.
-- Use minimap OCR/computer vision as an optional companion module.
-- Add a manual companion input or overlay for coarse map zones.
-- Map zones to toy IDs: left/right toys, upper/lower textures, jungle/lane modes.
+## Item Power Spike Motifs
 
-## Objective Waves
+Parse active-player items and react when important purchases appear:
 
-Dragon, Baron, Herald, turret, and inhibitor events could trigger distinctive
-waves:
+- first completed item: short confirmation wave
+- mythic-style or high-cost items: stronger ramp
+- defensive item after repeated deaths: stabilizing low texture
 
-- dragon: rising `Vibrate,All`
-- Baron: deeper slower `Thrusting`/`Suction`
-- turret: short rhythmic pulses
-- inhibitor: longer high-pressure pattern
+The Live Client item payload is available, but the current parser does not map
+items into bridge state yet.
 
-This needs richer event classification than the current kill/multikill mapping.
+## Rune-Aware Texture
 
-## Teamfight Burst Mode
+Use rune identity to change the emotional grammar:
 
-Detect clusters of champion kill events in a short time window and temporarily
-switch from steady performance mapping to a chaotic burst plan:
+- Electrocute-style runes: short burst after trades
+- Conqueror-style runes: sustained ramp during fights
+- Guardian-style runes: softer assist/ally-protection texture
 
-- quick `All` rise
-- `Rotate` or `Oscillate` texture
-- stronger penta finish
+This needs parsing active-player runes and a curated rune mapping table.
 
-## Heartbeat Near Death
+## Adaptive Personalization
 
-When health data becomes available, low HP could create a heartbeat-like pattern:
+Let the bridge learn preferred intensity over time:
 
-- small repeated `Vibrate`
-- short pause
-- intensity rising as danger increases
+- remember manual max intensity preferences
+- lower noisy textures that trigger too often
+- strengthen rare events that should feel special
 
-The current parser does not read active-player health yet.
+This should be opt-in and stored locally, with an easy reset.
 
-## Laning Phase Texture
+## Pattern Presets
 
-Early game could be restrained and positional:
+Add named pattern presets:
 
-- creep score advantage adds subtle vibration
-- ward score adds light support texture
-- death resets the pattern
+- restrained
+- arcade
+- cinematic
+- chaos
+- support-main
 
-## Jungle Tension Ramp
+Presets would choose calculator weights and Lovense action preferences without
+changing core code.
 
-If jungle/objective state becomes available, time near objective spawns could
-slowly raise intensity before fights happen.
+## Replay Calibration Mode
 
-## Capability-Aware Toy Mapping
+Feed saved or recorded Live Client JSONL into the calculators:
 
-Lovense device info may expose function names for connected toys. A future
-version could filter generated actions per toy:
+- replay a match timeline without LoL running
+- compare generated command plans
+- tune thresholds safely in dry-run mode
 
-- Nora/Max: `Rotate`/`Pump`
-- Solace-style strokers: `Stroke`, `Position`, `PatternV2`
-- vibration-only toys: `Vibrate`/`All`
+This would make iteration much faster than testing only in live games.
 
-That would let the planner be bold without sending ignored actions.
+## Spatial Minimap Companion
+
+Map-position feel is still desirable, but should only be added with a truthful
+data source:
+
+- minimap OCR/computer vision companion
+- manual coarse zone overlay
+- future Riot-supported coordinate source if one appears
+
+The bridge should not fake left/right or upper/lower map sensations without real
+position data.

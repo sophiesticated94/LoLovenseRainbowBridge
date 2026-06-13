@@ -27,7 +27,10 @@ and LovenseMappingConfig =
         EnableEventBursts: bool
         EnableDeathStop: bool
         EnableStrokeActions: bool
+        EnableCapabilityFiltering: bool
         DefaultStopPrevious: bool
+        UnknownCapabilityMode: string
+        ForceSupportedFunctions: string list
         MaxActionIntensity: int
         PumpMax: int
         DepthMax: int
@@ -54,11 +57,32 @@ type ScoringConfig =
         ScoreEqualityEpsilon: float
         MinIntensity: int
         MaxIntensity: int
+        BaseIntensityCap: int
+        HealthMinMultiplier: float
+        HealthPressureDropThresholdPercent: float
+        FullRegainPressureFactor: float
         SingleKillPulseValue: int
         SingleKillPulseDurationSec: float
         ProvisionalSingleKillWindowSec: float
         MinMultikillStreak: int
         MaxMultikillStreak: int
+        EnableObjectiveWaves: bool
+        EnableTeamfightBurst: bool
+        EnableHeartbeatNearDeath: bool
+        EnableLaningPhaseTexture: bool
+        EnableJungleTensionRamp: bool
+        TeamfightWindowSec: float
+        TeamfightKillCountThreshold: int
+        LowHealthHeartbeatThreshold: float
+        CriticalHealthHeartbeatThreshold: float
+        LaningPhaseEndSec: float
+        DragonInitialSpawnSec: float
+        DragonRespawnSec: float
+        HeraldInitialSpawnSec: float
+        HeraldDespawnSec: float
+        BaronInitialSpawnSec: float
+        BaronRespawnSec: float
+        ObjectiveTensionWindowSec: float
     }
 
 type LoggingConfig =
@@ -162,11 +186,57 @@ module Configuration =
         if config.Lovense.Mapping.StrokeMax < 0 || config.Lovense.Mapping.StrokeMax > 100 then
             invalidArg "Lovense.Mapping.StrokeMax" "Lovense.Mapping.StrokeMax must be in range 0..100."
 
+        let allowedUnknownCapabilityModes = set [ "SAFEUNIVERSAL"; "PASSTHROUGH" ]
+
+        if not (allowedUnknownCapabilityModes.Contains(config.Lovense.Mapping.UnknownCapabilityMode.ToUpperInvariant())) then
+            invalidArg "Lovense.Mapping.UnknownCapabilityMode" "Lovense.Mapping.UnknownCapabilityMode must be SafeUniversal or PassThrough."
+
         if config.Scoring.MinIntensity > config.Scoring.MaxIntensity then
             invalidArg "Scoring.MinIntensity" "Scoring.MinIntensity cannot be greater than Scoring.MaxIntensity."
 
+        if config.Scoring.BaseIntensityCap < config.Scoring.MinIntensity || config.Scoring.BaseIntensityCap > config.Scoring.MaxIntensity then
+            invalidArg "Scoring.BaseIntensityCap" "Scoring.BaseIntensityCap must be between Scoring.MinIntensity and Scoring.MaxIntensity."
+
+        if config.Scoring.HealthMinMultiplier < 0.0 || config.Scoring.HealthMinMultiplier > 1.0 then
+            invalidArg "Scoring.HealthMinMultiplier" "Scoring.HealthMinMultiplier must be in range 0.0..1.0."
+
+        if config.Scoring.HealthPressureDropThresholdPercent < 0.0 || config.Scoring.HealthPressureDropThresholdPercent > 100.0 then
+            invalidArg "Scoring.HealthPressureDropThresholdPercent" "Scoring.HealthPressureDropThresholdPercent must be in range 0.0..100.0."
+
+        if config.Scoring.FullRegainPressureFactor < 0.0 || config.Scoring.FullRegainPressureFactor > 1.0 then
+            invalidArg "Scoring.FullRegainPressureFactor" "Scoring.FullRegainPressureFactor must be in range 0.0..1.0."
+
         if config.Scoring.MinMultikillStreak > config.Scoring.MaxMultikillStreak then
             invalidArg "Scoring.MinMultikillStreak" "Scoring.MinMultikillStreak cannot be greater than Scoring.MaxMultikillStreak."
+
+        if config.Scoring.TeamfightWindowSec < 0.0 then
+            invalidArg "Scoring.TeamfightWindowSec" "Scoring.TeamfightWindowSec must be zero or greater."
+
+        if config.Scoring.TeamfightKillCountThreshold <= 0 then
+            invalidArg "Scoring.TeamfightKillCountThreshold" "Scoring.TeamfightKillCountThreshold must be greater than zero."
+
+        if config.Scoring.LowHealthHeartbeatThreshold < 0.0 || config.Scoring.LowHealthHeartbeatThreshold > 1.0 then
+            invalidArg "Scoring.LowHealthHeartbeatThreshold" "Scoring.LowHealthHeartbeatThreshold must be in range 0.0..1.0."
+
+        if config.Scoring.CriticalHealthHeartbeatThreshold < 0.0 || config.Scoring.CriticalHealthHeartbeatThreshold > 1.0 then
+            invalidArg "Scoring.CriticalHealthHeartbeatThreshold" "Scoring.CriticalHealthHeartbeatThreshold must be in range 0.0..1.0."
+
+        if config.Scoring.CriticalHealthHeartbeatThreshold > config.Scoring.LowHealthHeartbeatThreshold then
+            invalidArg "Scoring.CriticalHealthHeartbeatThreshold" "Critical health threshold cannot be greater than low health threshold."
+
+        for key, value in
+            [
+                "Scoring.LaningPhaseEndSec", config.Scoring.LaningPhaseEndSec
+                "Scoring.DragonInitialSpawnSec", config.Scoring.DragonInitialSpawnSec
+                "Scoring.DragonRespawnSec", config.Scoring.DragonRespawnSec
+                "Scoring.HeraldInitialSpawnSec", config.Scoring.HeraldInitialSpawnSec
+                "Scoring.HeraldDespawnSec", config.Scoring.HeraldDespawnSec
+                "Scoring.BaronInitialSpawnSec", config.Scoring.BaronInitialSpawnSec
+                "Scoring.BaronRespawnSec", config.Scoring.BaronRespawnSec
+                "Scoring.ObjectiveTensionWindowSec", config.Scoring.ObjectiveTensionWindowSec
+            ] do
+            if value < 0.0 then
+                invalidArg key $"{key} must be zero or greater."
 
         let allowedLogLevels = set [ "TRACE"; "DEBUG"; "INFO"; "WARN"; "ERROR" ]
 
@@ -206,7 +276,14 @@ module Configuration =
                             EnableEventBursts = boolValue root "Lovense:Mapping:EnableEventBursts"
                             EnableDeathStop = boolValue root "Lovense:Mapping:EnableDeathStop"
                             EnableStrokeActions = boolValue root "Lovense:Mapping:EnableStrokeActions"
+                            EnableCapabilityFiltering = boolValue root "Lovense:Mapping:EnableCapabilityFiltering"
                             DefaultStopPrevious = boolValue root "Lovense:Mapping:DefaultStopPrevious"
+                            UnknownCapabilityMode = requiredValue root "Lovense:Mapping:UnknownCapabilityMode"
+                            ForceSupportedFunctions =
+                                root.GetSection("Lovense:Mapping:ForceSupportedFunctions").Get<string[]>()
+                                |> Option.ofObj
+                                |> Option.map Array.toList
+                                |> Option.defaultValue []
                             MaxActionIntensity = intValue root "Lovense:Mapping:MaxActionIntensity"
                             PumpMax = intValue root "Lovense:Mapping:PumpMax"
                             DepthMax = intValue root "Lovense:Mapping:DepthMax"
@@ -234,11 +311,32 @@ module Configuration =
                     ScoreEqualityEpsilon = floatValue root "Scoring:ScoreEqualityEpsilon"
                     MinIntensity = intValue root "Scoring:MinIntensity"
                     MaxIntensity = intValue root "Scoring:MaxIntensity"
+                    BaseIntensityCap = intValue root "Scoring:BaseIntensityCap"
+                    HealthMinMultiplier = floatValue root "Scoring:HealthMinMultiplier"
+                    HealthPressureDropThresholdPercent = floatValue root "Scoring:HealthPressureDropThresholdPercent"
+                    FullRegainPressureFactor = floatValue root "Scoring:FullRegainPressureFactor"
                     SingleKillPulseValue = intValue root "Scoring:SingleKillPulseValue"
                     SingleKillPulseDurationSec = floatValue root "Scoring:SingleKillPulseDurationSec"
                     ProvisionalSingleKillWindowSec = floatValue root "Scoring:ProvisionalSingleKillWindowSec"
                     MinMultikillStreak = intValue root "Scoring:MinMultikillStreak"
                     MaxMultikillStreak = intValue root "Scoring:MaxMultikillStreak"
+                    EnableObjectiveWaves = boolValue root "Scoring:EnableObjectiveWaves"
+                    EnableTeamfightBurst = boolValue root "Scoring:EnableTeamfightBurst"
+                    EnableHeartbeatNearDeath = boolValue root "Scoring:EnableHeartbeatNearDeath"
+                    EnableLaningPhaseTexture = boolValue root "Scoring:EnableLaningPhaseTexture"
+                    EnableJungleTensionRamp = boolValue root "Scoring:EnableJungleTensionRamp"
+                    TeamfightWindowSec = floatValue root "Scoring:TeamfightWindowSec"
+                    TeamfightKillCountThreshold = intValue root "Scoring:TeamfightKillCountThreshold"
+                    LowHealthHeartbeatThreshold = floatValue root "Scoring:LowHealthHeartbeatThreshold"
+                    CriticalHealthHeartbeatThreshold = floatValue root "Scoring:CriticalHealthHeartbeatThreshold"
+                    LaningPhaseEndSec = floatValue root "Scoring:LaningPhaseEndSec"
+                    DragonInitialSpawnSec = floatValue root "Scoring:DragonInitialSpawnSec"
+                    DragonRespawnSec = floatValue root "Scoring:DragonRespawnSec"
+                    HeraldInitialSpawnSec = floatValue root "Scoring:HeraldInitialSpawnSec"
+                    HeraldDespawnSec = floatValue root "Scoring:HeraldDespawnSec"
+                    BaronInitialSpawnSec = floatValue root "Scoring:BaronInitialSpawnSec"
+                    BaronRespawnSec = floatValue root "Scoring:BaronRespawnSec"
+                    ObjectiveTensionWindowSec = floatValue root "Scoring:ObjectiveTensionWindowSec"
                 }
 
             Logging =

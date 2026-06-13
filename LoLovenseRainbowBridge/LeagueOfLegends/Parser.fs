@@ -57,6 +57,31 @@ module Parser =
             Reason = reason
         }
 
+    let private boolFromString value =
+        match value with
+        | null -> None
+        | value when String.Equals(value, "true", StringComparison.OrdinalIgnoreCase) -> Some true
+        | value when String.Equals(value, "false", StringComparison.OrdinalIgnoreCase) -> Some false
+        | _ -> None
+
+    let private tryBool name node =
+        match Json.tryString name node |> Option.bind boolFromString with
+        | Some value -> Some value
+        | None ->
+            Json.tryInt name node
+            |> Option.bind (function
+                | 0 -> Some false
+                | 1 -> Some true
+                | _ -> None)
+
+    let private stringArray name node =
+        Json.tryGet name node
+        |> Option.map Json.arrayItems
+        |> Option.defaultValue []
+        |> List.choose (fun item ->
+            try Some(item.GetValue<string>())
+            with _ -> None)
+
     let private parsePlayer (node: JsonNode) : LolPlayerSnapshot * ParseWarning list =
         let scores = Json.tryGet Constants.RiotJson.Scores node
 
@@ -114,6 +139,8 @@ module Parser =
             CreepScore = creepScore
             WardScore = wardScore
             Level = level
+            CurrentHealth = None
+            MaxHealth = None
         },
         [
             yield! killsWarnings
@@ -123,6 +150,22 @@ module Parser =
             yield! wardScoreWarnings
             yield! levelWarnings
         ]
+
+    let private parseHealth activePlayerNode activePlayerId =
+        let championStats = Json.tryGet Constants.RiotJson.ChampionStats activePlayerNode
+        let currentHealth = championStats |> Option.bind (Json.tryFloat Constants.RiotJson.CurrentHealth)
+        let maxHealth = championStats |> Option.bind (Json.tryFloat Constants.RiotJson.MaxHealth)
+
+        let warnings =
+            [
+                if currentHealth.IsNone then
+                    warning "activePlayer" activePlayerId Constants.RiotJson.CurrentHealth "none" "Missing or invalid optional active player current health field."
+
+                if maxHealth.IsNone then
+                    warning "activePlayer" activePlayerId Constants.RiotJson.MaxHealth "none" "Missing or invalid optional active player max health field."
+            ]
+
+        currentHealth, maxHealth, warnings
 
     let private parseEvent (node: JsonNode) : LolEvent option =
         match Json.tryInt Constants.RiotJson.EventId node, Json.tryString Constants.RiotJson.EventName node with
@@ -135,6 +178,13 @@ module Parser =
                     KillerName = Json.tryString Constants.RiotJson.KillerName node
                     VictimName = Json.tryString Constants.RiotJson.VictimName node
                     KillStreak = Json.tryInt Constants.RiotJson.KillStreak node
+                    Assisters = stringArray Constants.RiotJson.Assisters node
+                    DragonType = Json.tryString Constants.RiotJson.DragonType node
+                    Stolen = tryBool Constants.RiotJson.Stolen node
+                    TurretKilled = Json.tryString Constants.RiotJson.TurretKilled node
+                    InhibKilled = Json.tryString Constants.RiotJson.InhibKilled node
+                    Acer = Json.tryString Constants.RiotJson.Acer node
+                    AcingTeam = Json.tryString Constants.RiotJson.AcingTeam node
                 }
 
         | _ ->
@@ -179,6 +229,22 @@ module Parser =
 
             match activePlayer with
             | Some activePlayer ->
+                let currentHealth, maxHealth, healthWarnings = parseHealth activePlayerNode activePlayer.RiotId
+                let activePlayer =
+                    {
+                        activePlayer with
+                            CurrentHealth = currentHealth
+                            MaxHealth = maxHealth
+                    }
+
+                let players =
+                    players
+                    |> List.map (fun player ->
+                        if hasAliasOverlap activeAliases player then
+                            activePlayer
+                        else
+                            player)
+
                 let events =
                     eventsNode
                     |> Json.tryGet Constants.RiotJson.Events
@@ -189,17 +255,60 @@ module Parser =
                 let eventWarnings =
                     events
                     |> List.collect (fun ev ->
-                        if ev.EventName = Constants.RiotEvents.Multikill && ev.KillStreak.IsNone then
-                            [
+                        [
+                            if ev.EventName = Constants.RiotEvents.Multikill && ev.KillStreak.IsNone then
                                 warning
                                     "event"
                                     (string ev.EventId)
                                     Constants.RiotJson.KillStreak
                                     "configured MinMultikillStreak"
                                     "Missing optional multikill streak field."
-                            ]
-                        else
-                            [])
+
+                            if ev.EventName = Constants.RiotEvents.DragonKill && ev.DragonType.IsNone then
+                                warning
+                                    "event"
+                                    (string ev.EventId)
+                                    Constants.RiotJson.DragonType
+                                    "none"
+                                    "Missing optional dragon type field."
+
+                            if
+                                (ev.EventName = Constants.RiotEvents.DragonKill
+                                 || ev.EventName = Constants.RiotEvents.HeraldKill
+                                 || ev.EventName = Constants.RiotEvents.BaronKill)
+                                && ev.Stolen.IsNone
+                            then
+                                warning
+                                    "event"
+                                    (string ev.EventId)
+                                    Constants.RiotJson.Stolen
+                                    "none"
+                                    "Missing optional objective stolen field."
+
+                            if ev.EventName = Constants.RiotEvents.TurretKilled && ev.TurretKilled.IsNone then
+                                warning
+                                    "event"
+                                    (string ev.EventId)
+                                    Constants.RiotJson.TurretKilled
+                                    "none"
+                                    "Missing optional turret identifier field."
+
+                            if ev.EventName = Constants.RiotEvents.InhibKilled && ev.InhibKilled.IsNone then
+                                warning
+                                    "event"
+                                    (string ev.EventId)
+                                    Constants.RiotJson.InhibKilled
+                                    "none"
+                                    "Missing optional inhibitor identifier field."
+
+                            if ev.EventName = Constants.RiotEvents.Ace && ev.Acer.IsNone then
+                                warning
+                                    "event"
+                                    (string ev.EventId)
+                                    Constants.RiotJson.Acer
+                                    "none"
+                                    "Missing optional ace actor field."
+                        ])
 
                 let gameTime =
                     gameDataNode
@@ -220,6 +329,7 @@ module Parser =
                             [
                                 yield! playerWarnings
                                 yield! eventWarnings
+                                yield! healthWarnings
                             ]
                     }
 
