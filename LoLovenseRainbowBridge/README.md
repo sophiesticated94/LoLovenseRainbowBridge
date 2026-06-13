@@ -213,6 +213,21 @@ Temporary effects include:
 - restrained laning texture before `LaningPhaseEndSec`
 - jungle/objective tension ramps before inferred spawn windows
 
+Heartbeat is configurable. It uses missing health to calculate a positive pulse
+amplitude, then shapes that amplitude with a short asymmetric cycle:
+
+```json
+"LowHealthHeartbeatThreshold": 0.30,
+"HeartbeatPulseMaxAmplitude": 6.0,
+"HeartbeatPulseCycleSec": 1.0,
+"HeartbeatPulseStartPhase": 0.72,
+"HeartbeatPulsePeakPhase": 0.78,
+"HeartbeatPulseEndPhase": 0.98
+```
+
+Most of the cycle stays near zero; the pulse rises quickly, peaks briefly, then
+falls smoothly. Lower HP means a larger final heartbeat contribution.
+
 Capability filtering is controlled by:
 
 ```json

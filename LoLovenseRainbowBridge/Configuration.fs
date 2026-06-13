@@ -85,6 +85,11 @@ type ScoringConfig =
         TeamfightKillCountThreshold: int
         LowHealthHeartbeatThreshold: float
         CriticalHealthHeartbeatThreshold: float
+        HeartbeatPulseMaxAmplitude: float
+        HeartbeatPulseCycleSec: float
+        HeartbeatPulseStartPhase: float
+        HeartbeatPulsePeakPhase: float
+        HeartbeatPulseEndPhase: float
         LaningPhaseEndSec: float
         DragonInitialSpawnSec: float
         DragonRespawnSec: float
@@ -263,6 +268,25 @@ module Configuration =
         if config.Scoring.CriticalHealthHeartbeatThreshold > config.Scoring.LowHealthHeartbeatThreshold then
             invalidArg "Scoring.CriticalHealthHeartbeatThreshold" "Critical health threshold cannot be greater than low health threshold."
 
+        if config.Scoring.HeartbeatPulseMaxAmplitude < 0.0 then
+            invalidArg "Scoring.HeartbeatPulseMaxAmplitude" "Scoring.HeartbeatPulseMaxAmplitude must be zero or greater."
+
+        if config.Scoring.HeartbeatPulseCycleSec <= 0.0 then
+            invalidArg "Scoring.HeartbeatPulseCycleSec" "Scoring.HeartbeatPulseCycleSec must be greater than zero."
+
+        for key, value in
+            [
+                "Scoring.HeartbeatPulseStartPhase", config.Scoring.HeartbeatPulseStartPhase
+                "Scoring.HeartbeatPulsePeakPhase", config.Scoring.HeartbeatPulsePeakPhase
+                "Scoring.HeartbeatPulseEndPhase", config.Scoring.HeartbeatPulseEndPhase
+            ] do
+            if value < 0.0 || value > 1.0 then
+                invalidArg key $"{key} must be in range 0.0..1.0."
+
+        if not (config.Scoring.HeartbeatPulseStartPhase < config.Scoring.HeartbeatPulsePeakPhase
+                && config.Scoring.HeartbeatPulsePeakPhase < config.Scoring.HeartbeatPulseEndPhase) then
+            invalidArg "Scoring.HeartbeatPulsePhases" "Heartbeat pulse phases must satisfy StartPhase < PeakPhase < EndPhase."
+
         for key, value in
             [
                 "Scoring.LaningPhaseEndSec", config.Scoring.LaningPhaseEndSec
@@ -413,6 +437,11 @@ module Configuration =
                     TeamfightKillCountThreshold = intValue root "Scoring:TeamfightKillCountThreshold"
                     LowHealthHeartbeatThreshold = floatValue root "Scoring:LowHealthHeartbeatThreshold"
                     CriticalHealthHeartbeatThreshold = floatValue root "Scoring:CriticalHealthHeartbeatThreshold"
+                    HeartbeatPulseMaxAmplitude = floatValue root "Scoring:HeartbeatPulseMaxAmplitude"
+                    HeartbeatPulseCycleSec = floatValue root "Scoring:HeartbeatPulseCycleSec"
+                    HeartbeatPulseStartPhase = floatValue root "Scoring:HeartbeatPulseStartPhase"
+                    HeartbeatPulsePeakPhase = floatValue root "Scoring:HeartbeatPulsePeakPhase"
+                    HeartbeatPulseEndPhase = floatValue root "Scoring:HeartbeatPulseEndPhase"
                     LaningPhaseEndSec = floatValue root "Scoring:LaningPhaseEndSec"
                     DragonInitialSpawnSec = floatValue root "Scoring:DragonInitialSpawnSec"
                     DragonRespawnSec = floatValue root "Scoring:DragonRespawnSec"

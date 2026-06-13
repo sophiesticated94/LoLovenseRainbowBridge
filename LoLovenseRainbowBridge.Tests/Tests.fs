@@ -46,6 +46,11 @@ let scoringConfig =
         TeamfightKillCountThreshold = 3
         LowHealthHeartbeatThreshold = 0.30
         CriticalHealthHeartbeatThreshold = 0.15
+        HeartbeatPulseMaxAmplitude = 6.0
+        HeartbeatPulseCycleSec = 1.0
+        HeartbeatPulseStartPhase = 0.72
+        HeartbeatPulsePeakPhase = 0.78
+        HeartbeatPulseEndPhase = 0.98
         LaningPhaseEndSec = 840.0
         DragonInitialSpawnSec = 300.0
         DragonRespawnSec = 300.0
@@ -163,19 +168,19 @@ let ``live health multiplier interpolates for arbitrary HP`` () =
 
 [<Fact>]
 let ``heartbeat amplitude follows missing health in zero to six range`` () =
-    Assert.Equal(0.0, TemporaryPulseCalculator.HeartbeatCalculator.amplitude 1.0, 6)
-    Assert.Equal(1.5, TemporaryPulseCalculator.HeartbeatCalculator.amplitude 0.75, 6)
-    Assert.Equal(3.0, TemporaryPulseCalculator.HeartbeatCalculator.amplitude 0.5, 6)
-    Assert.Equal(4.5, TemporaryPulseCalculator.HeartbeatCalculator.amplitude 0.25, 6)
-    Assert.Equal(6.0, TemporaryPulseCalculator.HeartbeatCalculator.amplitude 0.0, 6)
+    Assert.Equal(0.0, TemporaryPulseCalculator.HeartbeatCalculator.amplitude scoringConfig 1.0, 6)
+    Assert.Equal(1.5, TemporaryPulseCalculator.HeartbeatCalculator.amplitude scoringConfig 0.75, 6)
+    Assert.Equal(3.0, TemporaryPulseCalculator.HeartbeatCalculator.amplitude scoringConfig 0.5, 6)
+    Assert.Equal(4.5, TemporaryPulseCalculator.HeartbeatCalculator.amplitude scoringConfig 0.25, 6)
+    Assert.Equal(6.0, TemporaryPulseCalculator.HeartbeatCalculator.amplitude scoringConfig 0.0, 6)
 
 [<Fact>]
 let ``heartbeat pulse shape stays near zero most of cycle and peaks briefly`` () =
-    let quiet = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape 1000.10
-    let rising = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape 1000.75
-    let peak = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape 1000.78
-    let falling = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape 1000.90
-    let ended = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape 1000.99
+    let quiet = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape scoringConfig 1000.10
+    let rising = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape scoringConfig 1000.75
+    let peak = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape scoringConfig 1000.78
+    let falling = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape scoringConfig 1000.90
+    let ended = TemporaryPulseCalculator.HeartbeatCalculator.pulseShape scoringConfig 1000.99
 
     Assert.Equal(0.0, quiet, 6)
     Assert.InRange(rising, 0.01, 0.99)

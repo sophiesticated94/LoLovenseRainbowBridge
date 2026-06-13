@@ -478,12 +478,6 @@ module Scoring =
                         None)
 
         module HeartbeatCalculator =
-            let maxAmplitude = 6.0
-            let private cycleSec = 1.0
-            let private pulseStart = 0.72
-            let private pulsePeak = 0.78
-            let private pulseEnd = 0.98
-
             let private smoothStep edge0 edge1 value =
                 if edge1 <= edge0 then
                     0.0
@@ -491,25 +485,25 @@ module Scoring =
                     let t = ((value - edge0) / (edge1 - edge0)) |> Shared.clamp01
                     t * t * (3.0 - 2.0 * t)
 
-            let amplitude healthPercent =
+            let amplitude config healthPercent =
                 (1.0 - healthPercent)
                 |> Shared.clamp01
-                |> fun missingHealth -> missingHealth * maxAmplitude
+                |> fun missingHealth -> missingHealth * config.HeartbeatPulseMaxAmplitude
 
-            let pulseShape gameTime =
+            let pulseShape config gameTime =
                 let phase =
-                    let normalized = gameTime / cycleSec
+                    let normalized = gameTime / config.HeartbeatPulseCycleSec
                     normalized - Math.Floor normalized
 
-                if phase < pulseStart || phase > pulseEnd then
+                if phase < config.HeartbeatPulseStartPhase || phase > config.HeartbeatPulseEndPhase then
                     0.0
-                elif phase <= pulsePeak then
-                    smoothStep pulseStart pulsePeak phase
+                elif phase <= config.HeartbeatPulsePeakPhase then
+                    smoothStep config.HeartbeatPulseStartPhase config.HeartbeatPulsePeakPhase phase
                 else
-                    1.0 - smoothStep pulsePeak pulseEnd phase
+                    1.0 - smoothStep config.HeartbeatPulsePeakPhase config.HeartbeatPulseEndPhase phase
 
-            let value gameTime healthPercent =
-                amplitude healthPercent * pulseShape gameTime
+            let value config gameTime healthPercent =
+                amplitude config healthPercent * pulseShape config gameTime
 
         let heartbeat config (snapshot: BridgeSnapshot) =
             if not config.EnableHeartbeatNearDeath then
@@ -517,12 +511,12 @@ module Scoring =
             else
                 match healthPercent snapshot with
                 | Some hp when hp <= config.LowHealthHeartbeatThreshold ->
-                    let rawPulse = HeartbeatCalculator.value snapshot.GameTime hp
+                    let rawPulse = HeartbeatCalculator.value config snapshot.GameTime hp
                     let pulseValue =
                         rawPulse
                         |> Math.Round
                         |> int
-                        |> Shared.clamp 0 (int HeartbeatCalculator.maxAmplitude)
+                        |> Shared.clamp 0 (int config.HeartbeatPulseMaxAmplitude)
 
                     if pulseValue <= 0 then
                         []
@@ -536,8 +530,8 @@ module Scoring =
                                     [
                                         "healthPercent", hp.ToString("0.###")
                                         "missingHealth", (1.0 - hp).ToString("0.###")
-                                        "amplitude", (HeartbeatCalculator.amplitude hp).ToString("0.###")
-                                        "pulseShape", (HeartbeatCalculator.pulseShape snapshot.GameTime).ToString("0.###")
+                                        "amplitude", (HeartbeatCalculator.amplitude config hp).ToString("0.###")
+                                        "pulseShape", (HeartbeatCalculator.pulseShape config snapshot.GameTime).ToString("0.###")
                                         "rawPulse", rawPulse.ToString("0.###")
                                     ]
                             }
