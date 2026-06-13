@@ -73,6 +73,7 @@ module CapabilityResolver =
                 StereoFallbackApplied = false
                 CapabilitySource = "disabled"
                 ToyProfiles = profiles
+                NoSupportedActions = false
             }
         else
             let activeProfiles = selectedProfiles config.ToyId profiles
@@ -103,6 +104,11 @@ module CapabilityResolver =
                 if supported.IsEmpty
                    && String.Equals(config.Mapping.UnknownCapabilityMode, "SafeUniversal", StringComparison.OrdinalIgnoreCase) then
                     set [ Constants.Lovense.VibrateAction; Constants.Lovense.AllAction; Constants.Lovense.StopAction ]
+                elif supported.IsEmpty
+                     && String.Equals(config.Mapping.UnknownCapabilityMode, "PassThrough", StringComparison.OrdinalIgnoreCase) then
+                    plan.Actions
+                    |> List.map (fun action -> LovenseActionCodec.actionName action.Function)
+                    |> Set.ofList
                 else
                     supported
 
@@ -163,9 +169,17 @@ module CapabilityResolver =
                 collapsed
                 |> List.partition (fun action -> supportedUpper.Contains((LovenseActionCodec.actionName action.Function).ToUpperInvariant()))
 
+            let fallbackActions =
+                if supportedUpper.Contains(Constants.Lovense.VibrateAction.ToUpperInvariant()) then
+                    [ action Vibrate config.Mapping.MaxActionIntensity 0 ]
+                elif supportedUpper.Contains(Constants.Lovense.StopAction.ToUpperInvariant()) then
+                    [ action Stop 0 0 ]
+                else
+                    []
+
             let finalActions =
                 match kept with
-                | [] -> [ action Vibrate config.Mapping.MaxActionIntensity 0 ]
+                | [] -> fallbackActions
                 | kept -> kept
 
             let droppedNames = dropped |> List.map LovenseActionCodec.actionToString
@@ -185,4 +199,5 @@ module CapabilityResolver =
                 StereoFallbackApplied = stereoFallbackApplied
                 CapabilitySource = capabilitySource profiles forced legacySupportedFunctions
                 ToyProfiles = activeProfiles
+                NoSupportedActions = finalActions.IsEmpty
             }

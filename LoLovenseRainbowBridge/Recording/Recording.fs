@@ -400,7 +400,7 @@ module Replay =
                     {| gameId = gameId; offsetMs = record.OffsetMs; action = actionString; dryRun = config.DryRun |}
                 )
 
-                let! result = lovenseClient.SendCommandPlanAsync(plan, intensity, ct)
+                let! result = lovenseClient.SendCommandPlanAsync(plan, intensity, [], ct)
 
                 match result with
                 | Ok _ -> ()

@@ -143,4 +143,5 @@ type LovenseCapabilityResolution =
         StereoFallbackApplied: bool
         CapabilitySource: string
         ToyProfiles: LovenseToyCapabilityProfile list
+        NoSupportedActions: bool
     }

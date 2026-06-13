@@ -78,6 +78,81 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
 
         $"""{{"ackId":"{correlationId}","command":"{Constants.Lovense.CommandName}","action":"{escapeJsonString actionString}","timeSec":{invariantFloat plan.TimeSec},"stopPrevious":{stopPrevious},"apiVer":{Constants.Lovense.ApiVersion}{toyPart}}}"""
 
+    let traceActionString (trace: LovenseRuleEvaluationTrace) =
+        $"{trace.ExpandedFunction}:{int (Math.Round(trace.AfterLayerValue))}"
+
+    let ruleMappingSummary (traces: LovenseRuleEvaluationTrace list) (resolution: LovenseCapabilityResolution) =
+        let finalSet = resolution.FinalActions |> Set.ofList
+        let droppedSet = resolution.DroppedActions |> Set.ofList
+
+        traces
+        |> List.groupBy (fun trace -> trace.RuleName)
+        |> List.map (fun (ruleName, ruleTraces) ->
+            let expandedFunctions =
+                ruleTraces
+                |> List.map (fun trace -> trace.ExpandedFunction)
+                |> List.distinct
+
+            let candidateActions =
+                ruleTraces
+                |> List.map traceActionString
+                |> List.distinct
+
+            let viableActions =
+                candidateActions
+                |> List.filter (fun action -> finalSet.Contains action)
+
+            let droppedActions =
+                candidateActions
+                |> List.filter (fun action -> droppedSet.Contains action)
+
+            let traceDetails =
+                ruleTraces
+                |> List.map (fun trace ->
+                    {|
+                        expandedFunction = trace.ExpandedFunction
+                        layer = trace.Layer
+                        operation = trace.Operation
+                        expression = trace.Expression
+                        value = trace.Value
+                        minValue = trace.MinValue
+                        maxValue = trace.MaxValue
+                        beforeLayerValue = trace.BeforeLayerValue
+                        afterLayerValue = trace.AfterLayerValue
+                    |})
+
+            {|
+                ruleName = ruleName
+                kind = ruleTraces.Head.Kind
+                condition = ruleTraces.Head.Condition
+                targetFunctions = ruleTraces.Head.TargetFunctions
+                expandedFunctions = expandedFunctions
+                candidateActions = candidateActions
+                viableActions = viableActions
+                droppedActions = droppedActions
+                hasAnyViableToyFunction = not viableActions.IsEmpty
+                capabilitySource = resolution.CapabilitySource
+                traces = traceDetails
+            |})
+
+    let toyProfileSummary (profiles: LovenseToyCapabilityProfile list) =
+        profiles
+        |> List.map (fun profile ->
+            {|
+                toyId =
+                    profile.ToyId
+                    |> Option.map (fun toyId -> if toyId.Length <= 4 then "***" else $"***{toyId.Substring(toyId.Length - 4)}")
+                name = profile.Name
+                toyType = profile.ToyType
+                connected = profile.Connected
+                explicitFunctions = profile.ExplicitFunctions |> Set.toList
+                inferredFunctions = profile.InferredFunctions |> Set.toList
+                supportedFunctions = profile.SupportedFunctions |> Set.toList
+                stereoVibrationSupported = profile.StereoVibrationSupported
+                capabilitySource = string profile.CapabilitySource
+                notes = profile.Notes
+            |})
+
     let resolveAuthTokenAsync (ct: CancellationToken) =
         task {
             match generatedAuthToken with
@@ -171,7 +246,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                         connectGate.Release() |> ignore
         }
 
-    member this.SendCommandPlanAsync(plan: LovenseCommandPlan, requestedValue: int, ct: CancellationToken) =
+    member this.SendCommandPlanAsync(plan: LovenseCommandPlan, requestedValue: int, ruleTraces: LovenseRuleEvaluationTrace list, ct: CancellationToken) =
         task {
             let safeValue = requestedValue |> Shared.clamp scoringConfig.MinIntensity scoringConfig.MaxIntensity
             let correlationId = Transport.newCorrelationId()
@@ -179,108 +254,166 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
             let capabilityResolution = CapabilityResolver.resolve config capabilityProfiles supportedFunctions plan
             let filteredPlan = capabilityResolution.Plan
             let droppedActions = capabilityResolution.DroppedActions
-            let payload = createCommandPayload filteredPlan correlationId
             let actionString = LovenseActionCodec.planActionString filteredPlan
+            let finalActionForLog = if capabilityResolution.NoSupportedActions then "" else actionString
             let commandReasons = filteredPlan.Reasons |> List.map LovenseActionCodec.reasonToString
             let capabilitySource = capabilityResolution.CapabilitySource
+            let mappingSummary = ruleMappingSummary ruleTraces capabilityResolution
+            let toyProfiles = toyProfileSummary capabilityResolution.ToyProfiles
 
-            if config.DryRun then
-                logger.Info(
-                    "lovense.command.dry_run",
-                    "Lovense Socket API command skipped because DryRun is enabled.",
+            logger.Debug(
+                "lovense.rule_mapping",
+                "Mapped Lovense rules into capability-filtered command actions.",
+                {|
+                    correlationId = correlationId
+                    candidateAction = candidateActionString
+                    finalAction = finalActionForLog
+                    payloadAction = finalActionForLog
+                    droppedActions = droppedActions
+                    finalActions = capabilityResolution.FinalActions
+                    stereoApplied = capabilityResolution.StereoApplied
+                    stereoFallbackApplied = capabilityResolution.StereoFallbackApplied
+                    capabilitySource = capabilitySource
+                    toyProfiles = toyProfiles
+                    ruleMapping = mappingSummary
+                |}
+            )
+
+            if capabilityResolution.NoSupportedActions then
+                logger.Warn(
+                    "lovense.command.no_supported_actions",
+                    "No Lovense command emitted because no candidate action is supported by the selected toy capabilities.",
                     {|
                         correlationId = correlationId
                         requestedValue = requestedValue
                         safeValue = safeValue
-                        eventName = Constants.Lovense.SendToyCommandEmit
-                        action = actionString
                         candidateAction = candidateActionString
+                        finalAction = finalActionForLog
+                        payloadAction = ""
                         droppedActions = droppedActions
                         finalActions = capabilityResolution.FinalActions
-                        stereoApplied = capabilityResolution.StereoApplied
-                        stereoFallbackApplied = capabilityResolution.StereoFallbackApplied
                         reasons = commandReasons
                         capabilitySource = capabilitySource
-                        rawLogged = logger.IsRawLovenseEnabled
+                        toyProfiles = toyProfiles
+                        ruleMapping = mappingSummary
                     |}
                 )
-
-                logger.RawLovenseSocketEvent(correlationId, Constants.Lovense.SendToyCommandEmit, "emit", payload)
-                printfn "[DRY] Lovense Socket %s" actionString
 
                 return
                     Ok
                         {
                             RequestedValue = requestedValue
                             SafeValue = safeValue
-                            DryRun = true
+                            DryRun = config.DryRun
                             CorrelationId = correlationId
                             SocketConnected = false
                         }
             else
-                let! connected = this.EnsureConnectedAsync ct
+                let payload = createCommandPayload filteredPlan correlationId
 
-                match connected with
-                | Error error ->
-                    return Error(NotConnected error)
+                if config.DryRun then
+                    logger.Info(
+                        "lovense.command.dry_run",
+                        "Lovense Socket API command skipped because DryRun is enabled.",
+                        {|
+                            correlationId = correlationId
+                            requestedValue = requestedValue
+                            safeValue = safeValue
+                            eventName = Constants.Lovense.SendToyCommandEmit
+                            action = actionString
+                            candidateAction = candidateActionString
+                            finalAction = actionString
+                            payloadAction = actionString
+                            droppedActions = droppedActions
+                            finalActions = capabilityResolution.FinalActions
+                            stereoApplied = capabilityResolution.StereoApplied
+                            stereoFallbackApplied = capabilityResolution.StereoFallbackApplied
+                            reasons = commandReasons
+                            capabilitySource = capabilitySource
+                            ruleMapping = mappingSummary
+                            rawLogged = logger.IsRawLovenseEnabled
+                        |}
+                    )
 
-                | Ok _ ->
-                    match socket with
-                    | None ->
-                        return Error(NotConnected(SocketDisconnected "Socket was not available after successful connection."))
+                    logger.RawLovenseSocketEvent(correlationId, Constants.Lovense.SendToyCommandEmit, "emit", payload)
+                    printfn "[DRY] Lovense Socket %s" actionString
 
-                    | Some client when not client.Connected ->
-                        return Error(NotConnected(SocketDisconnected "Socket disconnected before command emit."))
+                    return
+                        Ok
+                            {
+                                RequestedValue = requestedValue
+                                SafeValue = safeValue
+                                DryRun = true
+                                CorrelationId = correlationId
+                                SocketConnected = false
+                            }
+                else
+                    let! connected = this.EnsureConnectedAsync ct
 
-                    | Some client ->
-                        logger.Info(
-                            "lovense.command.emit",
-                            "Emitting Lovense Socket API toy command.",
-                            {|
-                                correlationId = correlationId
-                                requestedValue = requestedValue
-                                safeValue = safeValue
-                                eventName = Constants.Lovense.SendToyCommandEmit
-                                action = actionString
-                                candidateAction = candidateActionString
-                                droppedActions = droppedActions
-                                finalActions = capabilityResolution.FinalActions
-                                stereoApplied = capabilityResolution.StereoApplied
-                                stereoFallbackApplied = capabilityResolution.StereoFallbackApplied
-                                reasons = commandReasons
-                                capabilitySource = capabilitySource
-                                payloadLength = payload.Length
-                                rawLogged = logger.IsRawLovenseEnabled
-                            |}
-                        )
+                    match connected with
+                    | Error error ->
+                        return Error(NotConnected error)
 
-                        let! emitResult =
-                            Transport.emitJsonAsync
-                                client
-                                logger
-                                Constants.Lovense.SendToyCommandEmit
-                                payload
-                                config.CommandAckTimeoutMs
-                                ct
+                    | Ok _ ->
+                        match socket with
+                        | None ->
+                            return Error(NotConnected(SocketDisconnected "Socket was not available after successful connection."))
 
-                        match emitResult with
-                        | Error error ->
-                            return Error error
-                        | Ok _ ->
-                            return
-                                Ok
-                                    {
-                                        RequestedValue = requestedValue
-                                        SafeValue = safeValue
-                                        DryRun = false
-                                        CorrelationId = correlationId
-                                        SocketConnected = client.Connected
-                                    }
-        }
+                        | Some client when not client.Connected ->
+                            return Error(NotConnected(SocketDisconnected "Socket disconnected before command emit."))
+
+                        | Some client ->
+                            logger.Info(
+                                "lovense.command.emit",
+                                "Emitting Lovense Socket API toy command.",
+                                {|
+                                    correlationId = correlationId
+                                    requestedValue = requestedValue
+                                    safeValue = safeValue
+                                    eventName = Constants.Lovense.SendToyCommandEmit
+                                    action = actionString
+                                    candidateAction = candidateActionString
+                                    finalAction = actionString
+                                    payloadAction = actionString
+                                    droppedActions = droppedActions
+                                    finalActions = capabilityResolution.FinalActions
+                                    stereoApplied = capabilityResolution.StereoApplied
+                                    stereoFallbackApplied = capabilityResolution.StereoFallbackApplied
+                                    reasons = commandReasons
+                                    capabilitySource = capabilitySource
+                                    ruleMapping = mappingSummary
+                                    payloadLength = payload.Length
+                                    rawLogged = logger.IsRawLovenseEnabled
+                                |}
+                            )
+
+                            let! emitResult =
+                                Transport.emitJsonAsync
+                                    client
+                                    logger
+                                    Constants.Lovense.SendToyCommandEmit
+                                    payload
+                                    config.CommandAckTimeoutMs
+                                    ct
+
+                            match emitResult with
+                            | Error error ->
+                                return Error error
+                            | Ok _ ->
+                                return
+                                    Ok
+                                        {
+                                            RequestedValue = requestedValue
+                                            SafeValue = safeValue
+                                            DryRun = false
+                                            CorrelationId = correlationId
+                                            SocketConnected = client.Connected
+                                        }
+            }
 
     member this.SendVibrateAsync(value: int, ct: CancellationToken) =
         let plan = Mapping.simpleVibratePlan config value
-        this.SendCommandPlanAsync(plan, value, ct)
+        this.SendCommandPlanAsync(plan, value, [], ct)
 
     member _.DisconnectAsync(ct: CancellationToken) =
         task {

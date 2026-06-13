@@ -171,7 +171,7 @@ module Runtime =
             )
 
             if shouldSendStop then
-                let! result = lovenseClient.SendCommandPlanAsync(stopPlan, 0, ct)
+                let! result = lovenseClient.SendCommandPlanAsync(stopPlan, 0, [], ct)
 
                 match result with
                 | Ok _ ->
@@ -462,11 +462,13 @@ module Runtime =
                                                     baseLayer = layers.Base
                                                     timedLayer = layers.Timed
                                                     effectLayer = layers.Effect
+                                                    otherLayer = layers.Other
                                                     final = layers.Final
                                                     contributions = layers.Contributions
                                                 |})
                                         stateDiff = commandFrame.StateDiff
                                         ruleDiagnostics = commandFrame.Diagnostics
+                                        ruleTraces = commandFrame.RuleTraces
                                         ruleVariables = commandFrame.RuleVariables
                                     |}
                             |}
@@ -494,7 +496,7 @@ module Runtime =
                                 )
 
                                 if shouldSendValue then
-                                    let! lovenseResult = lovenseClient.SendCommandPlanAsync(commandPlan, intensity, ct)
+                                    let! lovenseResult = lovenseClient.SendCommandPlanAsync(commandPlan, intensity, commandFrame.RuleTraces, ct)
 
                                     match lovenseResult with
                                     | Ok _ ->

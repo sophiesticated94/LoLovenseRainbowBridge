@@ -960,6 +960,47 @@ let ``function rule condition can use target scoped max value`` () =
     Assert.Equal(0.0, frame.FunctionStates[Pump].Effect, 6)
 
 [<Fact>]
+let ``rule trace records expression and evaluated value separately`` () =
+    let traceConfig =
+        {
+            ruleEngineLovenseConfig with
+                Mapping =
+                    {
+                        ruleEngineLovenseConfig.Mapping with
+                            FunctionProfiles =
+                                [
+                                    functionProfile "Vibrate" true
+                                ]
+                            Rules =
+                                [
+                                    functionRule "trace-rule" "Effect" "" "" "Vibrate" "Effect" "Add" "MaxValue * 0.5"
+                                ]
+                    }
+        }
+
+    let builder = LovenseCommandValueBuilder(traceConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let frame =
+        builder.Build
+            {
+                PreviousState = initialState
+                Snapshot = snapshot (Some(1000.0, 1000.0)) []
+                EvolvedState = initialState
+                Position = None
+                Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+                LoopIteration = 1L
+                RuntimePollMs = 250
+            }
+
+    let trace = Assert.Single(frame.RuleTraces)
+
+    Assert.Equal("trace-rule", trace.RuleName)
+    Assert.Equal("MaxValue * 0.5", trace.Expression)
+    Assert.Equal(10.0, trace.Value, 6)
+    Assert.Equal(0.0, trace.BeforeLayerValue, 6)
+    Assert.Equal(10.0, trace.AfterLayerValue, 6)
+    Assert.Equal(20.0, trace.MaxValue, 6)
+
+[<Fact>]
 let ``function max remains available for explicit cross function expressions`` () =
     let rangeConfig =
         {
@@ -1111,6 +1152,76 @@ let ``capability resolver keeps ferri single vibrate and drops rotate`` () =
     Assert.False(resolution.StereoApplied)
     Assert.Contains("Rotate:7", resolution.DroppedActions)
     Assert.Equal("Vibrate:12", LovenseActionCodec.planActionString resolution.Plan)
+    Assert.DoesNotContain("Rotate", LovenseActionCodec.planActionString resolution.Plan)
+    Assert.False(resolution.NoSupportedActions)
+
+[<Fact>]
+let ``capability resolver falls back only to supported safe command`` () =
+    let plan =
+        {
+            Actions =
+                [
+                    { Function = Rotate; Value = 7; MaxValue = 20; RangeStart = None }
+                ]
+            Reasons = [ BasePerformance ]
+            TimeSec = 2.0
+            StopPrevious = true
+            ToyId = None
+        }
+
+    let ferri =
+        DeviceInfo.inferToyCapabilityProfile
+            {
+                Id = Some "ferri"
+                Name = Some "Ferri"
+                ToyType = Some "ferri"
+                Nickname = None
+                Battery = None
+                Connected = Some true
+                ExplicitFunctions = Set.empty
+            }
+
+    let resolution = CapabilityResolver.resolve lovenseConfig [ ferri ] None plan
+
+    Assert.Contains("Rotate:7", resolution.DroppedActions)
+    Assert.Equal("Vibrate:0", LovenseActionCodec.planActionString resolution.Plan)
+    Assert.False(resolution.NoSupportedActions)
+
+[<Fact>]
+let ``capability resolver reports no supported actions when no fallback is supported`` () =
+    let plan =
+        {
+            Actions =
+                [
+                    { Function = Rotate; Value = 7; MaxValue = 20; RangeStart = None }
+                ]
+            Reasons = [ BasePerformance ]
+            TimeSec = 2.0
+            StopPrevious = true
+            ToyId = None
+        }
+
+    let suctionOnly =
+        {
+            ToyId = Some "custom"
+            Name = Some "Custom"
+            ToyType = Some "custom"
+            Nickname = None
+            Battery = None
+            Connected = Some true
+            ExplicitFunctions = set [ "Suction" ]
+            InferredFunctions = Set.empty
+            SupportedFunctions = set [ "Suction" ]
+            StereoVibrationSupported = false
+            CapabilitySource = Explicit
+            Notes = []
+        }
+
+    let resolution = CapabilityResolver.resolve lovenseConfig [ suctionOnly ] None plan
+
+    Assert.Contains("Rotate:7", resolution.DroppedActions)
+    Assert.Empty(resolution.Plan.Actions)
+    Assert.True(resolution.NoSupportedActions)
 
 [<Fact>]
 let ``stereo split maps left center and right position weights`` () =
