@@ -1,6 +1,8 @@
 module LoLovenseRainbowBridge.Tests
 
 open System
+open System.Drawing
+open System.Drawing.Imaging
 open System.IO
 open System.Text.Json.Nodes
 open LoLovenseRainbowBridge
@@ -84,6 +86,14 @@ let lovenseConfig =
                 StrokeMax = 100
             }
     }
+
+let testAssetPath fileName =
+    let outputPath = Path.Combine(AppContext.BaseDirectory, "TestAssets", fileName)
+
+    if File.Exists outputPath then
+        outputPath
+    else
+        Path.Combine(__SOURCE_DIRECTORY__, "TestAssets", fileName)
 
 let player health : BridgePlayer =
     {
@@ -248,49 +258,56 @@ let ``capability filtering removes unsupported actions and keeps safe fallback``
     Assert.Equal("Vibrate:10", Mapping.planActionString filtered)
 
 [<Fact>]
-let ``minimap detection finds green player indicator`` () =
-    // Generate test image programmatically using System.Drawing
-    use bitmap = new System.Drawing.Bitmap(200, 200, System.Drawing.Imaging.PixelFormat.Format24bppRgb)
-    use graphics = System.Drawing.Graphics.FromImage(bitmap)
-    
-    // Draw black background
-    graphics.Clear(System.Drawing.Color.Black)
-    
-    // Draw bright green player indicator at center (100, 100) - this should match the HSV detection range
-    graphics.FillEllipse(System.Drawing.Brushes.Lime, 92, 92, 16, 16)
-    
-    let captureResult = {
-        Bitmap = bitmap
-        Timestamp = DateTimeOffset.Now
-    }
-    
-    // Create default template
-    let template = MinimapDetector.createDefaultTemplate ()
-    Assert.True(template.IsSome, "Failed to create default template")
-    
-    // Run detection
-    let result = MinimapDetector.detectPlayerPosition captureResult template
-    
-    // Assert position is detected
-    Assert.True(result.Position.IsSome, "Player position should be detected")
-    
-    let position = result.Position.Value
-    
-    // Assert normalized coordinates are in valid range (0-1)
-    Assert.True(position.NormalizedX >= 0.0 && position.NormalizedX <= 1.0, sprintf "NormalizedX out of range: %f" position.NormalizedX)
-    Assert.True(position.NormalizedY >= 0.0 && position.NormalizedY <= 1.0, sprintf "NormalizedY out of range: %f" position.NormalizedY)
-    
-    // Assert confidence is reasonable (> 0.1 for now, will tune later)
-    Assert.True(position.Confidence > 0.1, sprintf "Confidence too low: %f" position.Confidence)
-    
-    // For now, just verify detection works without strict position checking
-    // The HSV parameters may need tuning to match System.Drawing colors accurately
+let ``default configuration enables position rotation`` () =
+    let config = Configuration.load ()
+
+    Assert.True(config.PositionBasedRotation.Enable)
+    Assert.Equal("Combined", config.PositionBasedRotation.MappingMode)
+    Assert.Equal(None, config.PositionBasedRotation.TemplateImagePath)
+    Assert.False(config.PositionBasedRotation.DebugMode)
 
 [<Fact>]
-let ``default template creates green circle`` () =
-    let template = MinimapDetector.createDefaultTemplate ()
-    Assert.True(template.IsSome, "Failed to create default template")
-    
-    let mat = template.Value
-    Assert.Equal(20, mat.Width)
-    Assert.Equal(20, mat.Height)
+let ``minimap detection uses real screenshot fixture template`` () =
+    use screenshot = new Bitmap(testAssetPath "screenshot.jpg")
+    use minimap = screenshot.Clone(Rectangle(992, 552, 208, 196), PixelFormat.Format24bppRgb)
+    use playerTemplate = minimap.Clone(Rectangle(94, 82, 48, 48), PixelFormat.Format24bppRgb)
+
+    let template = MinimapDetector.createTemplateFromBitmap playerTemplate
+    Assert.True(template.IsSome, "Expected a template created from the real screenshot crop.")
+
+    let captureResult =
+        {
+            Bitmap = minimap
+            Timestamp = DateTimeOffset.Now
+        }
+
+    let result = MinimapDetector.detectPlayerPosition captureResult template
+
+    Assert.Equal("TemplateMatching", result.DetectionMethod)
+    Assert.True(result.Position.IsSome, "Player marker should be detected from screenshot.jpg.")
+
+    let position = result.Position.Value
+    Assert.InRange(position.NormalizedX, 0.45, 0.70)
+    Assert.InRange(position.NormalizedY, 0.40, 0.70)
+    Assert.True(position.Confidence >= 0.7, sprintf "Template confidence too low: %f" position.Confidence)
+
+[<Fact>]
+let ``minimap detection works without generated default template`` () =
+    use screenshot = new Bitmap(testAssetPath "screenshot.jpg")
+    use minimap = screenshot.Clone(Rectangle(992, 552, 208, 196), PixelFormat.Format24bppRgb)
+
+    let captureResult =
+        {
+            Bitmap = minimap
+            Timestamp = DateTimeOffset.Now
+        }
+
+    let result = MinimapDetector.detectPlayerPosition captureResult None
+
+    Assert.True(result.DetectionMethod <> "TemplateMatching", $"Unexpected template matching path: {result.DetectionMethod}")
+    Assert.True(result.Position.IsSome, "Color/contour detector should find a marker in the real screenshot minimap.")
+
+    let position = result.Position.Value
+    Assert.InRange(position.NormalizedX, 0.0, 1.0)
+    Assert.InRange(position.NormalizedY, 0.0, 1.0)
+    Assert.True(position.Confidence > 0.1, sprintf "Color detector confidence too low: %f" position.Confidence)

@@ -67,14 +67,51 @@ Feed saved or recorded Live Client JSONL into the calculators:
 
 This would make iteration much faster than testing only in live games.
 
-## Spatial Minimap Companion
+## Minimap Auto-Calibration
 
-Map-position feel is still desirable, but should only be added with a truthful
-data source:
+The first minimap rotation implementation uses configured screen coordinates.
+Next step: make calibration easier and less brittle:
 
-- minimap OCR/computer vision companion
-- manual coarse zone overlay
-- future Riot-supported coordinate source if one appears
+- detect the minimap frame automatically from a full screenshot
+- save per-resolution and per-HUD-scale profiles
+- warn when the captured region does not look like a minimap
+- expose confidence and last detected marker in `track.log`
 
-The bridge should not fake left/right or upper/lower map sensations without real
-position data.
+This would make the feature friendlier for different monitors, borderless/fullscreen
+modes, and non-default HUD scales.
+
+## Visual Calibration Overlay
+
+Add a small local calibration window:
+
+- show the live minimap crop
+- draw the detected marker and confidence
+- let the user drag/resize the capture region
+- save the result back to config or a local profile
+
+This would turn minimap tuning from guesswork into a one-minute setup step.
+
+## ML Minimap Detector
+
+OpenCV HSV/contour detection is lightweight, but it can struggle with skins,
+compression, colorblind settings, and crowded fights. A future detector could use
+a small ONNX/YOLO model trained on real minimap crops:
+
+- classify own player, allies, enemies, objectives, and pings
+- detect multiple champions at once
+- estimate teamfight density from minimap alone
+- keep the current OpenCV detector as the no-model fallback
+
+This needs a dataset and a careful opt-in model download story.
+
+## Path And Direction Feel
+
+Once minimap detection is stable, map movement over time instead of only current
+position:
+
+- stronger right/left texture while rotating through river
+- lane-specific patterns during long pushes
+- short pulses when crossing from jungle to lane
+- special ramp when moving toward Baron, dragon, or enemy base
+
+This should be based on detected movement vectors, not guessed game state.

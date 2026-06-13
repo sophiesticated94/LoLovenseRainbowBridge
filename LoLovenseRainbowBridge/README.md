@@ -23,6 +23,9 @@ LeagueOfLegends/LiveClient.fs     HTTP client for https://127.0.0.1:2999
 Lovense/Contracts.fs              Lovense command contracts
 Lovense/Client.fs                 Lovense Standard Socket API client
 App/Runtime.fs                    orchestration loop
+ScreenCapture/ScreenCapture.fs    Windows screen-region capture
+MinimapDetector/MinimapDetector.fs OpenCV minimap player marker detection
+PositionMapping/PositionMapping.fs minimap position to Lovense rotation mapping
 Program.fs                        entrypoint
 ```
 
@@ -215,15 +218,15 @@ Each death subtracts `ceil(sqrt(nthDeath))` from base.
 
 ## Position-based rotation
 
-The bridge supports optional minimap position-based rotation for Lovense toys. When enabled, the application captures the League of Legends minimap at a configured screen region, detects the player's position using OpenCV, and maps the position to rotation values that are sent to the toy.
+The bridge supports minimap position-based rotation for Lovense toys. When enabled, the application captures the League of Legends minimap at a configured screen region, detects a player marker with OpenCV, normalizes the minimap position to `0..1`, and maps that position to a `Rotate` action in the outgoing Lovense plan.
 
 ### Configuration
 
-Enable and configure position-based rotation in `appsettings.json`:
+Position-based rotation is enabled in `appsettings.json` by default:
 
 ```json
 "PositionBasedRotation": {
-  "Enable": false,
+  "Enable": true,
   "CaptureIntervalMs": 500,
   "MinimapScreenX": 1700,
   "MinimapScreenY": 900,
@@ -231,27 +234,31 @@ Enable and configure position-based rotation in `appsettings.json`:
   "MinimapHeight": 200,
   "MappingMode": "Combined",
   "RotationSensitivity": 1.0,
-  "Debug": false
+  "TemplateImagePath": "",
+  "DebugMode": false
 }
 ```
 
 Or via environment variables:
 
 ```powershell
-$env:POSITION_BASED_ROTATION__ENABLE="true"
-$env:POSITION_BASED_ROTATION__CAPTURE_INTERVAL_MS="500"
-$env:POSITION_BASED_ROTATION__MINIMAP_SCREEN_X="1700"
-$env:POSITION_BASED_ROTATION__MINIMAP_SCREEN_Y="900"
-$env:POSITION_BASED_ROTATION__MINIMAP_WIDTH="200"
-$env:POSITION_BASED_ROTATION__MINIMAP_HEIGHT="200"
-$env:POSITION_BASED_ROTATION__MAPPING_MODE="Combined"
-$env:POSITION_BASED_ROTATION__ROTATION_SENSITIVITY="1.0"
-$env:POSITION_BASED_ROTATION__DEBUG="false"
+$env:POSITIONBASEDROTATION__ENABLE="true"
+$env:POSITIONBASEDROTATION__CAPTUREINTERVALMS="500"
+$env:POSITIONBASEDROTATION__MINIMAPSCREENX="1700"
+$env:POSITIONBASEDROTATION__MINIMAPSCREENY="900"
+$env:POSITIONBASEDROTATION__MINIMAPWIDTH="200"
+$env:POSITIONBASEDROTATION__MINIMAPHEIGHT="200"
+$env:POSITIONBASEDROTATION__MAPPINGMODE="Combined"
+$env:POSITIONBASEDROTATION__ROTATIONSENSITIVITY="1.0"
+$env:POSITIONBASEDROTATION__TEMPLATEIMAGEPATH="C:\path\to\real-player-marker-template.png"
+$env:POSITIONBASEDROTATION__DEBUGMODE="false"
 ```
+
+The legacy `POSITION_ROTATION_ENABLE` override is still accepted for the enable flag.
 
 ### Settings
 
-- **Enable**: Whether position-based rotation is enabled (default: `false`)
+- **Enable**: Whether position-based rotation is enabled (default: `true`)
 - **CaptureIntervalMs**: How often to capture the minimap in milliseconds (default: `500`)
 - **MinimapScreenX/MinimapScreenY**: Screen coordinates of the minimap's top-left corner (default: `1700, 900` for 1920x1080)
 - **MinimapWidth/MinimapHeight**: Dimensions of the minimap capture region (default: `200x200`)
@@ -261,19 +268,23 @@ $env:POSITION_BASED_ROTATION__DEBUG="false"
   - `ZoneBased`: Maps game zones (lanes, jungle) to rotation values
   - `Combined`: Combines quadrant, continuous, and zone-based approaches (default)
 - **RotationSensitivity**: Multiplier for rotation values (default: `1.0`)
-- **Debug**: Enable debug logging for position detection (default: `false`)
+- **TemplateImagePath**: Optional path to a real cropped player-marker template. Leave empty to use HSV/contour detection only.
+- **DebugMode**: Enable debug logging for position detection (default: `false`)
 
 ### How it works
 
 1. At the configured interval, the application captures the minimap region from the screen
-2. OpenCV processes the captured image to detect the player position using color-based detection and template matching
-3. The detected position (normalized coordinates 0-1) is mapped to a rotation value based on the selected mapping mode
-4. The rotation value is added to the Lovense command plan as a `Rotate` action
-5. Detection failures are logged but do not interrupt the main runtime loop
+2. If `TemplateImagePath` is configured, OpenCV tries template matching with that real image
+3. If no template is configured or matching fails, OpenCV uses HSV color thresholding, morphology, and contour scoring
+4. The detected position (normalized coordinates 0-1) is mapped to a rotation value based on the selected mapping mode
+5. The rotation value is added to the Lovense command plan as a `Rotate` action
+6. Detection failures are logged but do not interrupt the main runtime loop
 
 ### Notes
 
 - The minimap coordinates need to be configured based on your screen resolution and League of Legends client settings
 - The feature uses OpenCvSharp4 for image processing
-- Position detection is currently stubbed with placeholder logic; full implementation requires additional OpenCV configuration
+- The detector is tested against `LoLovenseRainbowBridge.Tests/TestAssets/screenshot.jpg`, not a generated minimap
+- Template matching should use a real cropped marker image; the app no longer creates a generated green-dot template
+- HSV/contour detection is intentionally lightweight. It is good enough for a first local bridge, but HUD scale, minimap skin, color settings, and video compression can require tuning
 - Rotation commands are combined with other Lovense actions (vibrate, etc.) in the command plan

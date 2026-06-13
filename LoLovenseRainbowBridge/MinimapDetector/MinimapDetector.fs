@@ -1,6 +1,9 @@
 namespace LoLovenseRainbowBridge.MinimapDetector
 
 open System
+open System.Drawing
+open System.Drawing.Imaging
+open System.IO
 open OpenCvSharp
 open LoLovenseRainbowBridge.ScreenCapture
 
@@ -21,95 +24,130 @@ type DetectionResult =
     }
 
 module MinimapDetector =
+    let private clamp minValue maxValue value =
+        if value < minValue then minValue
+        elif value > maxValue then maxValue
+        else value
+
     let private bitmapToMat (bitmap: System.Drawing.Bitmap) =
         use ms = new IO.MemoryStream()
         bitmap.Save(ms, System.Drawing.Imaging.ImageFormat.Bmp)
         ms.Position <- 0L
         Mat.FromImageData(ms.ToArray(), ImreadModes.Color)
 
-    let private colorBasedDetection (mat: Mat) =
-        try
-            // Convert to HSV color space
-            use hsv = new Mat()
-            Cv2.CvtColor(mat, hsv, ColorConversionCodes.BGR2HSV)
-            
-            // Filter for green colors (ally player indicator: ~40-80 hue range)
-            // HSV ranges: Lower (40, 50, 50), Upper (80, 255, 255)
-            let lower = Scalar(40.0, 50.0, 50.0)
-            let upper = Scalar(80.0, 255.0, 255.0)
-            use mask = new Mat()
-            // Create Scalar as Mat for the InputArray overload
-            use lowerMat = new Mat(1, 3, MatType.CV_64FC1, lower)
-            use upperMat = new Mat(1, 3, MatType.CV_64FC1, upper)
-            Cv2.InRange(hsv, lowerMat, upperMat, mask)
-            
-            // Find contours in the filtered image using Mat array version
-            use hierarchy = new Mat()
-            let mutable contours: Mat[] = null
-            Cv2.FindContours(mask, &contours, hierarchy, RetrievalModes.External, ContourApproximationModes.ApproxSimple)
-            
-            if contours <> null && contours.Length > 0 then
-                // Find the largest contour by area
-                let mutable maxArea = 0.0
-                let mutable largestContourIdx = 0
-                for i in 0 .. contours.Length - 1 do
-                    let area = Cv2.ContourArea(contours.[i])
-                    if area > maxArea then
-                        maxArea <- area
-                        largestContourIdx <- i
-                
-                // Check contour size (area > 50 pixels)
-                if maxArea > 50.0 then
-                    // Calculate centroid using moments
-                    let moments = Cv2.Moments(contours.[largestContourIdx])
-                    let centerX = moments.M10 / moments.M00
-                    let centerY = moments.M01 / moments.M00
-                    
-                    // Normalize coordinates (0-1)
-                    let normalizedX = centerX / float mat.Width
-                    let normalizedY = centerY / float mat.Height
-                    
-                    // Calculate confidence based on contour area (larger = higher confidence)
-                    let confidence = min 1.0 (maxArea / 500.0)
-                    
-                    Some {
+    let private makeMask (hsv: Mat) (lower: Scalar) (upper: Scalar) =
+        let mask = new Mat()
+        use lowerMat = new Mat(1, 1, MatType.CV_8UC3, lower)
+        use upperMat = new Mat(1, 1, MatType.CV_8UC3, upper)
+        Cv2.InRange(hsv, lowerMat, upperMat, mask)
+        mask
+
+    let private candidateFromContour (mat: Mat) profileName profileWeight (contour: Mat) =
+        let area = Cv2.ContourArea(contour)
+        let rect = Cv2.BoundingRect(contour)
+        let perimeter = Cv2.ArcLength(contour, true)
+
+        if area < 0.5 || area > 360.0 || rect.Width < 1 || rect.Height < 1 || rect.Width > 36 || rect.Height > 36 then
+            None
+        else
+            let aspect = float rect.Width / float rect.Height
+
+            if aspect < 0.25 || aspect > 4.0 then
+                None
+            else
+                let moments = Cv2.Moments(contour)
+                let centerX, centerY =
+                    if abs moments.M00 < 0.0001 then
+                        float rect.X + float rect.Width / 2.0, float rect.Y + float rect.Height / 2.0
+                    else
+                        moments.M10 / moments.M00, moments.M01 / moments.M00
+
+                let normalizedX = centerX / float mat.Width |> clamp 0.0 1.0
+                let normalizedY = centerY / float mat.Height |> clamp 0.0 1.0
+                let circularity =
+                    if perimeter <= 0.0 then 0.0
+                    else 4.0 * Math.PI * area / (perimeter * perimeter) |> clamp 0.0 1.0
+                let expectedArea = 45.0
+                let areaScore = 1.0 - (abs (area - expectedArea) / expectedArea) |> clamp 0.0 1.0
+                let expectedSize = 14.0
+                let sizeScore = 1.0 - (abs (float (max rect.Width rect.Height) - expectedSize) / expectedSize) |> clamp 0.0 1.0
+                let centerDistance =
+                    let dx = normalizedX - 0.5
+                    let dy = normalizedY - 0.5
+                    Math.Sqrt(dx * dx + dy * dy) / Math.Sqrt(0.5)
+                let centerScore = 1.0 - centerDistance |> clamp 0.0 1.0
+                let score = profileWeight + areaScore + sizeScore + circularity + (0.35 * centerScore)
+
+                Some(
+                    score,
+                    profileName,
+                    {
                         X = centerX
                         Y = centerY
                         NormalizedX = normalizedX
                         NormalizedY = normalizedY
-                        Confidence = confidence
+                        Confidence = score / 4.35 |> clamp 0.0 1.0
                     }
-                else
-                    None
-            else
-                None
+                )
+
+    let private contourCandidates mat profileName profileWeight mask =
+        use cleaned = new Mat()
+        use kernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, Size(2, 2))
+        Cv2.MorphologyEx(mask, cleaned, MorphTypes.Close, kernel)
+
+        use hierarchy = new Mat()
+        let mutable contours: Mat[] = null
+        Cv2.FindContours(cleaned, &contours, hierarchy, RetrievalModes.External, ContourApproximationModes.ApproxSimple)
+
+        if isNull contours then
+            []
+        else
+            contours
+            |> Array.choose (candidateFromContour mat profileName profileWeight)
+            |> Array.toList
+
+    let private colorBasedDetection (mat: Mat) =
+        try
+            use hsv = new Mat()
+            Cv2.CvtColor(mat, hsv, ColorConversionCodes.BGR2HSV)
+
+            let masks =
+                [
+                    "SelectedPlayerYellow", 1.3, makeMask hsv (Scalar(15.0, 45.0, 80.0)) (Scalar(45.0, 255.0, 255.0))
+                    "PlayerGreen", 1.15, makeMask hsv (Scalar(38.0, 40.0, 50.0)) (Scalar(92.0, 255.0, 255.0))
+                    "TeamCyanBlue", 0.85, makeMask hsv (Scalar(85.0, 45.0, 60.0)) (Scalar(125.0, 255.0, 255.0))
+                ]
+
+            try
+                masks
+                |> List.collect (fun (name, weight, mask) -> contourCandidates mat name weight mask)
+                |> List.sortByDescending (fun (score, _, _) -> score)
+                |> List.tryHead
+                |> Option.map (fun (_, _, position) -> position)
+            finally
+                masks |> List.iter (fun (_, _, mask) -> mask.Dispose())
         with _ ->
             None
 
     let private templateMatching (mat: Mat) (template: Mat) =
         try
-            // Use template matching with CCoeffNormed method
             use result = new Mat()
             Cv2.MatchTemplate(mat, template, result, TemplateMatchModes.CCoeffNormed)
-            
-            // Find the best match location
+
             let mutable minVal = 0.0
             let mutable maxVal = 0.0
             let mutable minLoc = OpenCvSharp.Point()
             let mutable maxLoc = OpenCvSharp.Point()
             Cv2.MinMaxLoc(result, &minVal, &maxVal, &minLoc, &maxLoc)
-            
-            // Check if confidence threshold is met (0.7 as per plan)
+
             let threshold = 0.7
             if maxVal >= threshold then
-                // Calculate center of matched template
                 let centerX = float maxLoc.X + float template.Width / 2.0
                 let centerY = float maxLoc.Y + float template.Height / 2.0
-                
-                // Normalize coordinates (0-1)
+
                 let normalizedX = centerX / float mat.Width
                 let normalizedY = centerY / float mat.Height
-                
+
                 Some {
                     X = centerX
                     Y = centerY
@@ -119,6 +157,22 @@ module MinimapDetector =
                 }
             else
                 None
+        with _ ->
+            None
+
+    let createTemplateFromBitmap (bitmap: Bitmap) =
+        try
+            Some(bitmapToMat bitmap)
+        with _ ->
+            None
+
+    let loadTemplateFromFile path =
+        try
+            if String.IsNullOrWhiteSpace path || not (File.Exists path) then
+                None
+            else
+                use bitmap = new Bitmap(path)
+                createTemplateFromBitmap bitmap
         with _ ->
             None
 
@@ -145,11 +199,3 @@ module MinimapDetector =
                     { Position = None; Timestamp = captureResult.Timestamp; DetectionMethod = "None" }
         with _ ->
             { Position = None; Timestamp = captureResult.Timestamp; DetectionMethod = "Error" }
-
-    let createDefaultTemplate () =
-        try
-            let mat = new Mat(20, 20, MatType.CV_8UC3, new Scalar(0.0, 255.0, 0.0))
-            Cv2.Circle(mat, new OpenCvSharp.Point(10, 10), 8, new Scalar(0.0, 255.0, 0.0), -1)
-            Some mat
-        with _ ->
-            None

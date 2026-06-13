@@ -110,6 +110,7 @@ type PositionBasedRotationConfig =
         MinimapHeight: int
         MappingMode: string
         RotationSensitivity: float
+        TemplateImagePath: string option
         DebugMode: bool
     }
 
@@ -413,6 +414,7 @@ module Configuration =
                     MinimapHeight = intValue root "PositionBasedRotation:MinimapHeight"
                     MappingMode = requiredValue root "PositionBasedRotation:MappingMode"
                     RotationSensitivity = floatValue root "PositionBasedRotation:RotationSensitivity"
+                    TemplateImagePath = optionalString root "PositionBasedRotation:TemplateImagePath"
                     DebugMode = boolValue root "PositionBasedRotation:DebugMode"
                 }
         }

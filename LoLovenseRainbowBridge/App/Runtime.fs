@@ -273,7 +273,9 @@ module Runtime =
                                             }
                                         
                                         let captureResult = ScreenCapture.captureLeagueMinimap minimapRegion
-                                        let template = MinimapDetector.createDefaultTemplate ()
+                                        let template =
+                                            positionRotationConfig.TemplateImagePath
+                                            |> Option.bind MinimapDetector.loadTemplateFromFile
                                         let detectionResult = MinimapDetector.detectPlayerPosition captureResult template
                                         
                                         let nextPositionRotationState =
@@ -297,6 +299,9 @@ module Runtime =
                                                     {|
                                                         normalizedX = playerPosition.NormalizedX
                                                         normalizedY = playerPosition.NormalizedY
+                                                        confidence = playerPosition.Confidence
+                                                        detectionMethod = detectionResult.DetectionMethod
+                                                        templateConfigured = positionRotationConfig.TemplateImagePath.IsSome
                                                         rotationValue = rotationResult.RotationValue
                                                         mappingMethod = rotationResult.MappingMethod
                                                         zone = string rotationResult.Zone
@@ -315,7 +320,11 @@ module Runtime =
                                             logger.Debug(
                                                 "runtime.position_rotation.no_detection",
                                                 "No player position detected in minimap.",
-                                                {| detectionMethod = detectionResult.DetectionMethod |}
+                                                {|
+                                                    detectionMethod = detectionResult.DetectionMethod
+                                                    detectionFailures = nextPositionRotationState.DetectionFailures
+                                                    templateConfigured = positionRotationConfig.TemplateImagePath.IsSome
+                                                |}
                                             )
                                             commandPlan, nextPositionRotationState
                                     with ex ->
