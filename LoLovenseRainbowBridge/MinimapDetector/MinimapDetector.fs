@@ -90,7 +90,7 @@ module MinimapDetector =
                     }
                 )
 
-    let private contourCandidates mat profileName profileWeight mask =
+    let private contourCandidates (mat: Mat) profileName profileWeight (mask: Mat) =
         use cleaned = new Mat()
         use kernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, Size(2, 2))
         Cv2.MorphologyEx(mask, cleaned, MorphTypes.Close, kernel)

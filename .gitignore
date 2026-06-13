@@ -8,3 +8,7 @@ logs/
 *.nupkg
 
 .fake
+
+**/appsettings.Local.json
+*.secrets.json
+*.lovense-token.json
