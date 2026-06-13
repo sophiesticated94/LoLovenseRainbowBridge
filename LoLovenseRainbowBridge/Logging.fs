@@ -3,6 +3,7 @@ namespace LoLovenseRainbowBridge
 open System
 open System.Collections.Generic
 open System.IO
+open System.Text.RegularExpressions
 open System.Text.Json
 open System.Text.Json.Nodes
 
@@ -76,6 +77,43 @@ type StructuredSessionLogger(config: LoggingConfig) =
                 JsonSerializer.Serialize(document.RootElement, prettyOptions)
             with _ ->
                 rawText
+
+    let redactSensitiveJson (rawText: string) =
+        let sensitiveKeys = set [ "authtoken"; "token"; "utoken" ]
+
+        let rec redactNode (node: JsonNode) =
+            if isNull node then
+                ()
+            else
+                match node with
+                | :? JsonObject as object ->
+                    let keys = object |> Seq.map (fun pair -> pair.Key) |> List.ofSeq
+
+                    for key in keys do
+                        if sensitiveKeys.Contains(key.ToLowerInvariant()) then
+                            object[key] <- JsonValue.Create(Constants.Lovense.AuthTokenRedacted)
+                        else
+                            redactNode object[key]
+                | :? JsonArray as array ->
+                    for item in array do
+                        redactNode item
+                | _ ->
+                    ()
+
+        try
+            let root = JsonNode.Parse(rawText)
+
+            if isNull root then
+                rawText
+            else
+                redactNode root
+                root.ToJsonString(compactOptions)
+        with _ ->
+            Regex.Replace(
+                rawText,
+                """(?i)(""(?:authToken|token|utoken)""\s*:\s*"")[^""]*("")""",
+                $"$1{Constants.Lovense.AuthTokenRedacted}$2"
+            )
 
     let writeLine (writer: StreamWriter) (entry: JsonObject) =
         writer.WriteLine(entry.ToJsonString(compactOptions))
@@ -152,36 +190,7 @@ type StructuredSessionLogger(config: LoggingConfig) =
                 rawJson = normalizeRawJson rawText
             |}
 
-    member _.RawLovenseRequest(correlationId: string, commandUrl: string, dryRun: bool, payload: string) =
-        writeRaw
-            lovenseWriter
-            "lovense.raw.request"
-            "Raw Lovense command request."
-            {|
-                correlationId = correlationId
-                commandUrl = commandUrl
-                dryRun = dryRun
-                payload = normalizeRawJson payload
-            |}
-
-    member _.RawLovenseResponse(correlationId: string, commandUrl: string, statusCode: int option, body: string option, dryRun: bool) =
-        writeRaw
-            lovenseWriter
-            "lovense.raw.response"
-            "Raw Lovense command response."
-            {|
-                correlationId = correlationId
-                commandUrl = commandUrl
-                dryRun = dryRun
-                statusCode = statusCode
-                body = body |> Option.map normalizeRawJson
-            |}
-
     member _.RawLovenseSocketHttp(correlationId: string, url: string, direction: string, statusCode: int option, body: string) =
-        let redactedBody =
-            body.Replace("\"authToken\"", "\"authToken\"")
-                .Replace("\\\"authToken\\\"", "\\\"authToken\\\"")
-
         writeRaw
             lovenseWriter
             "lovense.raw.socket_http"
@@ -191,7 +200,7 @@ type StructuredSessionLogger(config: LoggingConfig) =
                 url = url
                 direction = direction
                 statusCode = statusCode
-                body = normalizeRawJson redactedBody
+                body = body |> redactSensitiveJson |> normalizeRawJson
             |}
 
     member _.RawLovenseSocketEvent(correlationId: string, eventName: string, direction: string, rawText: string) =
@@ -203,7 +212,7 @@ type StructuredSessionLogger(config: LoggingConfig) =
                 correlationId = correlationId
                 eventName = eventName
                 direction = direction
-                rawText = normalizeRawJson rawText
+                rawText = rawText |> redactSensitiveJson |> normalizeRawJson
             |}
 
     interface IDisposable with

@@ -4,7 +4,11 @@ open System
 open System.Drawing
 open System.Drawing.Imaging
 open System.IO
+open System.Net
+open System.Net.Http
 open System.Text.Json.Nodes
+open System.Threading
+open System.Threading.Tasks
 open LoLovenseRainbowBridge
 open LoLovenseRainbowBridge.Bridge
 open LoLovenseRainbowBridge.Bridge.Scoring
@@ -14,6 +18,26 @@ open LoLovenseRainbowBridge.MinimapDetector
 open LoLovenseRainbowBridge.Recording
 open LoLovenseRainbowBridge.ScreenCapture
 open Xunit
+
+type StubHttpMessageHandler(statusCode: HttpStatusCode, responseBody: string, onRequest: HttpRequestMessage -> string -> unit) =
+    inherit HttpMessageHandler()
+
+    override _.SendAsync(request: HttpRequestMessage, ct: CancellationToken) =
+        task {
+            let! requestBody =
+                if isNull request.Content then
+                    Task.FromResult("")
+                else
+                    request.Content.ReadAsStringAsync(ct)
+
+            onRequest request requestBody
+
+            return
+                new HttpResponseMessage(
+                    statusCode,
+                    Content = new StringContent(responseBody)
+                )
+        }
 
 let scoringConfig =
     {
@@ -68,7 +92,6 @@ let scoringConfig =
 
 let lovenseConfig =
     {
-        AuthToken = None
         ToyId = None
         Platform = "tests"
         Developer =
@@ -76,7 +99,6 @@ let lovenseConfig =
                 Token = None
                 UserId = None
                 UserName = None
-                UserEmail = None
                 UserToken = None
             }
         CommandTimeSec = 2.0
@@ -157,6 +179,229 @@ let snapshotAt gameTime health events =
 
 let tempPath fileName =
     Path.Combine(Path.GetTempPath(), "LoLovenseRainbowBridge.Tests", Guid.NewGuid().ToString("N"), fileName)
+
+[<Fact>]
+let ``lovense transport post json sends body and returns response`` () =
+    let mutable capturedUrl = ""
+    let mutable capturedBody = ""
+
+    use handler =
+        new StubHttpMessageHandler(
+            HttpStatusCode.OK,
+            """{"code":0,"data":{"ok":true}}""",
+            fun request body ->
+                capturedUrl <- request.RequestUri.ToString()
+                capturedBody <- body
+        )
+
+    use http = new HttpClient(handler)
+    use logger = new StructuredSessionLogger(loggingConfig (tempPath "transport-logs"))
+
+    let result =
+        Transport.postJsonAsync
+            http
+            logger
+            "corr-test"
+            "https://example.test/lovense"
+            """{"token":"<redacted>"}"""
+            """{"token":"real"}"""
+            CancellationToken.None
+        |> fun task -> task.GetAwaiter().GetResult()
+
+    match result with
+    | Ok response ->
+        Assert.Equal("corr-test", response.CorrelationId)
+        Assert.Equal(200, response.StatusCode)
+        Assert.Equal("""{"code":0,"data":{"ok":true}}""", response.Body)
+        Assert.Equal("https://example.test/lovense", capturedUrl)
+        Assert.Equal("""{"token":"real"}""", capturedBody)
+    | Error error ->
+        failwithf "Expected transport success, got %A" error
+
+[<Fact>]
+let ``lovense action codec round trips action strings`` () =
+    let actionString = "Vibrate:11,Rotate:4,Stroke:0-80,All:12"
+    let plan = LovenseActionCodec.planFromActionString lovenseConfig actionString
+
+    Assert.Equal(actionString, LovenseActionCodec.planActionString plan)
+
+[<Fact>]
+let ``lovense getToken payload includes documented fields`` () =
+    let developer =
+        {
+            Token = Some "developer-secret"
+            UserId = Some "user-123"
+            UserName = Some "display-name"
+            UserToken = Some "app-user-token"
+        }
+
+    let payload = Auth.buildTokenRequestBody developer |> JsonNode.Parse
+
+    Assert.Equal("developer-secret", payload[Constants.Lovense.DeveloperTokenField].GetValue<string>())
+    Assert.Equal("user-123", payload[Constants.Lovense.UserIdField].GetValue<string>())
+    Assert.Equal("display-name", payload[Constants.Lovense.UserNameField].GetValue<string>())
+    Assert.Equal("app-user-token", payload[Constants.Lovense.UserTokenField].GetValue<string>())
+
+[<Fact>]
+let ``lovense token request redaction hides developer and user token`` () =
+    let developer =
+        {
+            Token = Some "developer-secret"
+            UserId = Some "user-123"
+            UserName = Some "display-name"
+            UserToken = Some "app-user-token"
+        }
+
+    let payload = Auth.buildRedactedTokenRequestBody developer
+    let parsed = JsonNode.Parse(payload)
+
+    Assert.DoesNotContain("developer-secret", payload)
+    Assert.DoesNotContain("app-user-token", payload)
+    Assert.Equal(Constants.Lovense.AuthTokenRedacted, parsed[Constants.Lovense.DeveloperTokenField].GetValue<string>())
+    Assert.Equal(Constants.Lovense.AuthTokenRedacted, parsed[Constants.Lovense.UserTokenField].GetValue<string>())
+    Assert.Contains("user-123", payload)
+
+[<Fact>]
+let ``lovense token response parser returns runtime auth token`` () =
+    let response = """{"code":0,"message":"OK","data":{"authToken":"runtime-token"}}"""
+
+    match Auth.parseTokenResponse response with
+    | Ok token -> Assert.Equal("runtime-token", token)
+    | Error error -> failwithf "Expected token, got %A" error
+
+[<Fact>]
+let ``lovense socket url parser reads url and path`` () =
+    let response = """{"code":0,"message":"OK","data":{"socketIoUrl":"https://socket.example","socketIoPath":"/socket.io"}}"""
+
+    match SocketUrl.parseSocketUrlResponse response with
+    | Ok info ->
+        Assert.Equal("https://socket.example", info.SocketIoUrl)
+        Assert.Equal("/socket.io", info.SocketIoPath)
+    | Error error ->
+        failwithf "Expected socket url info, got %A" error
+
+[<Fact>]
+let ``lovense device info parser extracts toys and functions`` () =
+    let raw =
+        """
+        {
+          "code": 0,
+          "data": {
+            "toyList": [
+              { "id": "toy-1", "name": "Nora", "toyType": "nora", "nickName": "main", "battery": 88, "connected": true }
+            ],
+            "function": "Vibrate,Rotate,Pump"
+          }
+        }
+        """
+
+    let deviceInfo = DeviceInfo.parse raw
+
+    Assert.Single(deviceInfo.ToyList) |> ignore
+    Assert.Equal(Some "toy-1", deviceInfo.ToyList.Head.Id)
+    Assert.Equal(Some 88, deviceInfo.ToyList.Head.Battery)
+    Assert.Equal(Some true, deviceInfo.ToyList.Head.Connected)
+    Assert.True(deviceInfo.SupportedFunctions.Value.Contains("Vibrate"))
+    Assert.True(deviceInfo.SupportedFunctions.Value.Contains("Rotate"))
+    Assert.True(deviceInfo.SupportedFunctions.Value.Contains("Pump"))
+
+[<Fact>]
+let ``missing lovense developer credentials return result error`` () =
+    let developer =
+        {
+            Token = None
+            UserId = None
+            UserName = None
+            UserToken = None
+        }
+
+    use http = new HttpClient()
+    use logger = new StructuredSessionLogger(loggingConfig (tempPath "logs"))
+
+    let result =
+        Auth.requestAuthTokenAsync http logger developer CancellationToken.None
+        |> fun task -> task.GetAwaiter().GetResult()
+
+    match result with
+    | Error(MissingDeveloperCredentials missingFields) ->
+        Assert.Contains("Lovense.Developer.Token", missingFields)
+        Assert.Contains("Lovense.Developer.UserId", missingFields)
+    | other ->
+        failwithf "Expected missing credentials error, got %A" other
+
+[<Fact>]
+let ``lovense live socket api e2e can fetch device info and send guarded command`` () =
+    let enabled =
+        String.Equals(Environment.GetEnvironmentVariable("RUN_LOVENSE_E2E"), "true", StringComparison.OrdinalIgnoreCase)
+        && String.Equals(Environment.GetEnvironmentVariable("LOVENSE_E2E_SEND_COMMAND"), "true", StringComparison.OrdinalIgnoreCase)
+
+    if enabled then
+        let localConfigPath =
+            Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "..", "LoLovenseRainbowBridge", "appsettings.Local.json"))
+
+        Assert.True(File.Exists localConfigPath, "Opted into Lovense E2E, but appsettings.Local.json was not found.")
+
+        let localRoot = JsonNode.Parse(File.ReadAllText localConfigPath)
+        let lovenseRoot = localRoot["Lovense"]
+        let developerRoot = lovenseRoot["Developer"]
+
+        let localLovenseConfig =
+            {
+                lovenseConfig with
+                    Platform = lovenseRoot["Platform"].GetValue<string>()
+                    DryRun = false
+                    Developer =
+                        {
+                            Token = Some(developerRoot["Token"].GetValue<string>())
+                            UserId = Some(developerRoot["UserId"].GetValue<string>())
+                            UserName =
+                                if isNull developerRoot["UserName"] then None else Some(developerRoot["UserName"].GetValue<string>())
+                            UserToken =
+                                if isNull developerRoot["UserToken"] then None else Some(developerRoot["UserToken"].GetValue<string>())
+                        }
+            }
+
+        use http = Shared.insecureHttpClient ()
+        use logger = new StructuredSessionLogger({ loggingConfig (tempPath "lovense-e2e-logs") with LogRawLovense = true })
+        use cts = new CancellationTokenSource(TimeSpan.FromSeconds(60.0))
+
+        let authToken =
+            match Auth.requestAuthTokenAsync http logger localLovenseConfig.Developer cts.Token |> fun task -> task.GetAwaiter().GetResult() with
+            | Ok token -> token
+            | Error error -> failwithf "Lovense getToken failed: %A" error
+
+        match SocketUrl.requestSocketUrlAsync http logger localLovenseConfig.Platform authToken cts.Token |> fun task -> task.GetAwaiter().GetResult() with
+        | Ok info ->
+            Assert.False(String.IsNullOrWhiteSpace info.SocketIoUrl)
+            Assert.False(String.IsNullOrWhiteSpace info.SocketIoPath)
+        | Error error ->
+            failwithf "Lovense getSocketUrl failed: %A" error
+
+        use client = new LovenseClient(localLovenseConfig, scoringConfig, logger)
+
+        try
+            match client.EnsureConnectedAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult() with
+            | Ok state -> Assert.True(state.Connected)
+            | Error error -> failwithf "Lovense socket connection failed: %A" error
+
+            let deadline = DateTimeOffset.UtcNow.AddSeconds(30.0)
+            while client.LatestDeviceInfo.IsNone && DateTimeOffset.UtcNow < deadline do
+                Thread.Sleep(250)
+
+            Assert.True(client.LatestDeviceInfo.IsSome, "Lovense device info event was not received.")
+            Assert.NotEmpty(client.LatestDeviceInfo.Value.ToyList)
+
+            match client.SendVibrateAsync(10, cts.Token) |> fun task -> task.GetAwaiter().GetResult() with
+            | Ok result -> Assert.False(result.DryRun)
+            | Error error -> failwithf "Lovense vibrate command failed: %A" error
+        finally
+            client.SendVibrateAsync(0, CancellationToken.None)
+            |> fun task -> task.GetAwaiter().GetResult()
+            |> ignore
+
+            client.DisconnectAsync(CancellationToken.None)
+            |> fun task -> task.GetAwaiter().GetResult()
+            |> ignore
 
 [<Fact>]
 let ``live health multiplier interpolates for arbitrary HP`` () =
@@ -333,7 +578,7 @@ let ``capability filtering removes unsupported actions and keeps safe fallback``
 
     Assert.Single(dropped) |> ignore
     Assert.Equal("Rotate:10", dropped.Head)
-    Assert.Equal("Vibrate:10", Mapping.planActionString filtered)
+    Assert.Equal("Vibrate:10", LovenseActionCodec.planActionString filtered)
 
 [<Fact>]
 let ``default configuration enables position rotation`` () =
@@ -377,7 +622,7 @@ let ``sqlite recorder opens closes and skips unchanged slices`` () =
     let state = initialState
     let breakdown = computeIntensityBreakdown scoringConfig bridgeSnapshot state
     let plan = Mapping.simpleVibratePlan lovenseConfig breakdown.Intensity
-    let action = Mapping.planActionString plan
+    let action = LovenseActionCodec.planActionString plan
     let now = DateTimeOffset.Parse("2026-06-13T10:00:00.0000000+00:00")
     let configSummary = {| test = true |}
 
@@ -398,7 +643,7 @@ let ``sqlite recorder opens closes and skips unchanged slices`` () =
 [<Fact>]
 let ``replay can reconstruct command plan from recorded action`` () =
     let plan = LovenseActionCodec.planFromActionString lovenseConfig "Vibrate:11,Rotate:4,All:12"
-    let action = Mapping.planActionString plan
+    let action = LovenseActionCodec.planActionString plan
 
     Assert.Equal("Vibrate:11,Rotate:4,All:12", action)
     Assert.Equal(3, plan.Actions.Length)

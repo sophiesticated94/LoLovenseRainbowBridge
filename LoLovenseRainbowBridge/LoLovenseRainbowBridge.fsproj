@@ -42,7 +42,13 @@
     <Compile Include="LeagueOfLegends\LiveClient.fs" />
 
     <Compile Include="Lovense\Contracts.fs" />
+    <Compile Include="Lovense\ActionCodec.fs" />
     <Compile Include="Lovense\Mapping.fs" />
+    <Compile Include="Lovense\Transport.fs" />
+    <Compile Include="Lovense\DeviceInfo.fs" />
+    <Compile Include="Lovense\Auth.fs" />
+    <Compile Include="Lovense\SocketUrl.fs" />
+    <Compile Include="Lovense\SocketRuntime.fs" />
     <Compile Include="Lovense\Client.fs" />
 
     <Compile Include="Recording\Recording.fs" />

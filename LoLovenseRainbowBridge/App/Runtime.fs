@@ -146,7 +146,7 @@ module Runtime =
 
             let now = DateTimeOffset.UtcNow
             let stopPlan = Mapping.stopPlan lovenseConfig StopCommand
-            let stopAction = Mapping.planActionString stopPlan
+            let stopAction = LovenseActionCodec.planActionString stopPlan
             let shouldSendStop = shouldSendCommand runtimeConfig.ResendEveryMs now stopAction state
 
             logger.Info(
@@ -347,7 +347,7 @@ module Runtime =
 
                         let commandPlan = fst commandPlanWithRotation
                         let positionRotationState = snd commandPlanWithRotation
-                        let actionString = Mapping.planActionString commandPlan
+                        let actionString = LovenseActionCodec.planActionString commandPlan
 
                         logger.Info(
                             "runtime.league.success",
@@ -415,8 +415,8 @@ module Runtime =
                                 commandPlan =
                                     {|
                                         action = actionString
-                                        reasons = commandPlan.Reasons |> List.map Mapping.reasonToString
-                                        actions = commandPlan.Actions |> List.map Mapping.actionToString
+                                        reasons = commandPlan.Reasons |> List.map LovenseActionCodec.reasonToString
+                                        actions = commandPlan.Actions |> List.map LovenseActionCodec.actionToString
                                         timeSec = commandPlan.TimeSec
                                         stopPrevious = commandPlan.StopPrevious
                                     |}
@@ -440,7 +440,7 @@ module Runtime =
                                         previousLastSentCommand = evolved.LastSentCommand
                                         resendEveryMs = runtimeConfig.ResendEveryMs
                                         commandAction = actionString
-                                        commandReasons = commandPlan.Reasons |> List.map Mapping.reasonToString
+                                        commandReasons = commandPlan.Reasons |> List.map LovenseActionCodec.reasonToString
                                     |}
                                 )
 

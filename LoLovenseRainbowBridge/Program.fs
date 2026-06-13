@@ -33,8 +33,13 @@ module Program =
             league = config.League
             lovense =
                 {|
-                    authToken = config.Lovense.AuthToken |> Option.map (fun _ -> "<configured>")
-                    developer = "<redacted>"
+                    developer =
+                        {|
+                            tokenConfigured = config.Lovense.Developer.Token.IsSome
+                            userIdConfigured = config.Lovense.Developer.UserId.IsSome
+                            userNameConfigured = config.Lovense.Developer.UserName.IsSome
+                            userTokenConfigured = config.Lovense.Developer.UserToken.IsSome
+                        |}
                     toyId = config.Lovense.ToyId |> Option.map (fun _ -> "<configured>")
                     platform = config.Lovense.Platform
                     commandTimeSec = config.Lovense.CommandTimeSec

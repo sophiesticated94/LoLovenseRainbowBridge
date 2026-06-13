@@ -32,57 +32,6 @@ module Mapping =
             sameFunction
             |> List.maxBy (fun action -> action.Value))
 
-    let actionName fn =
-        match fn with
-        | Vibrate -> Constants.Lovense.VibrateAction
-        | Rotate -> Constants.Lovense.RotateAction
-        | Pump -> Constants.Lovense.PumpAction
-        | Thrusting -> Constants.Lovense.ThrustingAction
-        | Fingering -> Constants.Lovense.FingeringAction
-        | Suction -> Constants.Lovense.SuctionAction
-        | Depth -> Constants.Lovense.DepthAction
-        | Stroke -> Constants.Lovense.StrokeAction
-        | Oscillate -> Constants.Lovense.OscillateAction
-        | All -> Constants.Lovense.AllAction
-        | Stop -> Constants.Lovense.StopAction
-
-    let actionToString action =
-        match action.Function, action.RangeStart with
-        | Stop, _ ->
-            Constants.Lovense.StopAction
-        | Stroke, Some startValue ->
-            $"{actionName action.Function}:{startValue}-{action.Value}"
-        | _ ->
-            $"{actionName action.Function}:{action.Value}"
-
-    let reasonToString reason =
-        match reason with
-        | CompatibilityVibrate -> "CompatibilityVibrate"
-        | BasePerformance -> "BasePerformance"
-        | KillBurst eventId -> $"KillBurst:{eventId}"
-        | MultikillBurst(eventId, streak) -> $"MultikillBurst:{eventId}:{streak}"
-        | DeathReset -> "DeathReset"
-        | AssistSupportTexture -> "AssistSupportTexture"
-        | HighMomentumTexture -> "HighMomentumTexture"
-        | ObjectiveWave -> "ObjectiveWave"
-        | TeamfightBurst -> "TeamfightBurst"
-        | AceBurst -> "AceBurst"
-        | HeartbeatNearDeath -> "HeartbeatNearDeath"
-        | LaningTexture -> "LaningTexture"
-        | JungleTensionRamp -> "JungleTensionRamp"
-        | CapabilityFiltered droppedActions ->
-            let joined = String.concat "|" droppedActions
-            $"CapabilityFiltered:{joined}"
-        | StopCommand -> "StopCommand"
-
-    let planActionString plan =
-        match plan.Actions with
-        | [] -> Constants.Lovense.StopAction
-        | actions ->
-            actions
-            |> List.map actionToString
-            |> String.concat ","
-
     let private activePlayerDeathEvents snapshot =
         snapshot.Events
         |> List.filter (fun ev ->
@@ -187,15 +136,6 @@ module Mapping =
         {
             plan with
                 Actions = rotationAction :: plan.Actions
-        }
-
-    let createRotationPlan rotationValue timeSec toyId =
-        {
-            Actions = [ action Rotate 20 rotationValue ]
-            Reasons = [ BasePerformance ]
-            TimeSec = timeSec
-            StopPrevious = true
-            ToyId = toyId
         }
 
     let plan (config: LovenseConfig) (previousState: GeneratorState) (snapshot: BridgeSnapshot) (evolvedState: GeneratorState) (breakdown: IntensityBreakdown) =
@@ -318,9 +258,9 @@ module Mapping =
             | Some supported ->
                 let kept, dropped =
                     plan.Actions
-                    |> List.partition (fun action -> supported.Contains((actionName action.Function).ToUpperInvariant()))
+                    |> List.partition (fun action -> supported.Contains((LovenseActionCodec.actionName action.Function).ToUpperInvariant()))
 
-                let droppedNames = dropped |> List.map actionToString
+                let droppedNames = dropped |> List.map LovenseActionCodec.actionToString
 
                 if droppedNames.IsEmpty then
                     plan, []

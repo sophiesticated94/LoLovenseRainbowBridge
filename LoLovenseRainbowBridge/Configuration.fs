@@ -10,7 +10,6 @@ type LeagueConfig =
 
 type LovenseConfig =
     {
-        AuthToken: string option
         ToyId: string option
         Platform: string
         Developer: LovenseDeveloperConfig
@@ -26,7 +25,6 @@ and LovenseDeveloperConfig =
         Token: string option
         UserId: string option
         UserName: string option
-        UserEmail: string option
         UserToken: string option
     }
 
@@ -362,7 +360,6 @@ module Configuration =
 
             Lovense =
                 {
-                    AuthToken = optionalString root "Lovense:AuthToken"
                     ToyId = optionalString root "Lovense:ToyId"
                     Platform = requiredValue root "Lovense:Platform"
                     Developer =
@@ -370,7 +367,6 @@ module Configuration =
                             Token = optionalString root "Lovense:Developer:Token"
                             UserId = optionalString root "Lovense:Developer:UserId"
                             UserName = optionalString root "Lovense:Developer:UserName"
-                            UserEmail = optionalString root "Lovense:Developer:UserEmail"
                             UserToken = optionalString root "Lovense:Developer:UserToken"
                         }
                     CommandTimeSec = floatValue root "Lovense:CommandTimeSec"
@@ -495,7 +491,6 @@ module Configuration =
                 Lovense =
                     {
                         loaded.Lovense with
-                            AuthToken = legacyEnv "LOVENSE_AUTH_TOKEN" |> Option.orElse loaded.Lovense.AuthToken
                             ToyId = legacyEnv "LOVENSE_TOY_ID" |> Option.orElse loaded.Lovense.ToyId
                             DryRun = legacyBool "DRY_RUN" loaded.Lovense.DryRun
                     }

@@ -2,54 +2,9 @@ namespace LoLovenseRainbowBridge.Lovense
 
 open System
 open System.Globalization
-open System.Net.Http
-open System.Text
-open System.Text.Json
-open System.Text.Json.Nodes
 open System.Threading
-open System.Threading.Tasks
 open LoLovenseRainbowBridge
 open SocketIOClient
-open SocketIOClient.Common
-
-type LovenseConnectionState =
-    {
-        Connected: bool
-        DryRun: bool
-        SocketIoUrl: string option
-        SocketIoPath: string option
-        SocketId: string option
-    }
-
-type LovenseCommandResult =
-    {
-        RequestedValue: int
-        SafeValue: int
-        DryRun: bool
-        CorrelationId: string
-        SocketConnected: bool
-    }
-
-type LovenseConnectionError =
-    | MissingAuthToken
-    | SocketUrlRequestFailed of url: string * message: string
-    | SocketUrlRejected of url: string * code: int option * message: string
-    | SocketConnectFailed of socketIoUrl: string * socketIoPath: string * message: string
-    | SocketDisconnected of reason: string
-    | UnexpectedConnectionError of message: string * errorType: string
-
-type LovenseCommandError =
-    | NotConnected of LovenseConnectionError
-    | CommandEmitFailed of eventName: string * message: string
-    | CommandRejected of eventName: string * message: string
-    | CommandTimeout of eventName: string * timeoutMs: int
-    | UnexpectedCommandError of eventName: string * message: string * errorType: string
-
-type private SocketUrlInfo =
-    {
-        SocketIoUrl: string
-        SocketIoPath: string
-    }
 
 type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: StructuredSessionLogger) =
 
@@ -61,6 +16,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
     let mutable qrCodeLogged = false
     let mutable supportedFunctions: Set<string> option = None
     let mutable generatedAuthToken: string option = None
+    let mutable latestDeviceInfo: LovenseDeviceInfo option = None
 
     let invariantFloat (value: float) =
         value.ToString(CultureInfo.InvariantCulture)
@@ -68,56 +24,17 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
     let escapeJsonString (value: string) =
         value.Replace("\\", "\\\\").Replace("\"", "\\\"")
 
-    let knownFunctionNames =
-        set
-            [
-                Constants.Lovense.VibrateAction
-                Constants.Lovense.RotateAction
-                Constants.Lovense.PumpAction
-                Constants.Lovense.ThrustingAction
-                Constants.Lovense.FingeringAction
-                Constants.Lovense.SuctionAction
-                Constants.Lovense.DepthAction
-                Constants.Lovense.StrokeAction
-                Constants.Lovense.OscillateAction
-                Constants.Lovense.AllAction
-                Constants.Lovense.StopAction
-            ]
+    let onDeviceInfo (deviceInfo: LovenseDeviceInfo) =
+        latestDeviceInfo <- Some deviceInfo
 
-    let tryExtractSupportedFunctions (rawText: string) =
-        let rec collect (node: JsonNode) =
-            if isNull node then
-                Set.empty
-            else
-                match node with
-                | :? JsonValue as value ->
-                    try
-                        let text = value.GetValue<string>()
+        match deviceInfo.SupportedFunctions with
+        | Some functions -> supportedFunctions <- Some functions
+        | None -> ()
 
-                        knownFunctionNames
-                        |> Seq.filter (fun name -> text.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
-                        |> Set.ofSeq
-                    with _ ->
-                        Set.empty
-                | :? JsonArray as array ->
-                    array
-                    |> Seq.choose (fun item -> if isNull item then None else Some item)
-                    |> Seq.map collect
-                    |> Seq.fold Set.union Set.empty
-                | :? JsonObject as object ->
-                    object
-                    |> Seq.choose (fun pair -> if isNull pair.Value then None else Some pair.Value)
-                    |> Seq.map collect
-                    |> Seq.fold Set.union Set.empty
-                | _ ->
-                    Set.empty
-
-        try
-            let root = JsonNode.Parse(rawText)
-            let functions = collect root
-            if functions.IsEmpty then None else Some functions
-        with _ ->
-            None
+    let onQrCode () =
+        if not qrCodeLogged then
+            qrCodeLogged <- true
+            printfn "Lovense QR code event received. See track.log or lovense.log if raw logging is enabled."
 
     let createCommandPayload (plan: LovenseCommandPlan) correlationId =
         let toyPart =
@@ -126,401 +43,33 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
             |> Option.defaultValue ""
 
         let stopPrevious = if plan.StopPrevious then 1 else 0
-        let actionString = Mapping.planActionString plan
+        let actionString = LovenseActionCodec.planActionString plan
 
         $"""{{"ackId":"{correlationId}","command":"{Constants.Lovense.CommandName}","action":"{escapeJsonString actionString}","timeSec":{invariantFloat plan.TimeSec},"stopPrevious":{stopPrevious},"apiVer":{Constants.Lovense.ApiVersion}{toyPart}}}"""
 
-    let redactedSocketUrlRequestBody =
-        $"""{{"{Constants.Lovense.PlatformField}":"{escapeJsonString config.Platform}","{Constants.Lovense.AuthTokenField}":"{Constants.Lovense.AuthTokenRedacted}"}}"""
-
-    let socketUrlRequestBody authToken =
-        $"""{{"{Constants.Lovense.PlatformField}":"{escapeJsonString config.Platform}","{Constants.Lovense.AuthTokenField}":"{escapeJsonString authToken}"}}"""
-
-    let tokenRequestBody (developerToken: string) =
-        let body = JsonObject()
-        body[Constants.Lovense.DeveloperTokenField] <- JsonValue.Create(developerToken)
-        body[Constants.Lovense.UserIdField] <- JsonValue.Create(config.Developer.UserId |> Option.defaultValue "")
-
-        for key, value in
-            [
-                Constants.Lovense.UserNameField, config.Developer.UserName
-                Constants.Lovense.UserTokenField, config.Developer.UserToken
-            ] do
-            value
-            |> Option.filter (fun value -> not (String.IsNullOrWhiteSpace value))
-            |> Option.iter (fun value -> body[key] <- JsonValue.Create(value))
-
-        body.ToJsonString()
-
-    let redactedTokenRequestBody =
-        let body = JsonObject()
-        body[Constants.Lovense.DeveloperTokenField] <- JsonValue.Create(Constants.Lovense.AuthTokenRedacted)
-        body[Constants.Lovense.UserIdField] <- JsonValue.Create(config.Developer.UserId |> Option.defaultValue "")
-
-        config.Developer.UserName
-        |> Option.filter (fun value -> not (String.IsNullOrWhiteSpace value))
-        |> Option.iter (fun value -> body[Constants.Lovense.UserNameField] <- JsonValue.Create(value))
-
-        config.Developer.UserToken
-        |> Option.filter (fun value -> not (String.IsNullOrWhiteSpace value))
-        |> Option.iter (fun _ -> body[Constants.Lovense.UserTokenField] <- JsonValue.Create(Constants.Lovense.AuthTokenRedacted))
-
-        body.ToJsonString()
-
-    let parseTokenResponse (body: string) =
-        try
-            let root = JsonNode.Parse(body)
-
-            if isNull root then
-                Error(SocketUrlRejected(Constants.Lovense.GetToken, None, "Lovense returned empty auth token response."))
-            else
-                let code = Json.tryInt Constants.Lovense.CodeField root
-                let message = Json.tryString Constants.Lovense.MessageField root |> Option.defaultValue ""
-
-                match code with
-                | Some Constants.Lovense.SuccessCode ->
-                    match root |> Json.tryGet Constants.Lovense.DataField |> Option.bind (Json.tryString Constants.Lovense.AuthTokenField) with
-                    | Some authToken when not (String.IsNullOrWhiteSpace authToken) -> Ok authToken
-                    | _ -> Error(SocketUrlRejected(Constants.Lovense.GetToken, code, "Token response did not include authToken."))
-                | _ ->
-                    Error(SocketUrlRejected(Constants.Lovense.GetToken, code, message))
-        with ex ->
-            Error(SocketUrlRequestFailed(Constants.Lovense.GetToken, $"Could not parse auth token response: {ex.Message}"))
-
-    let parseSocketUrlResponse (body: string) =
-        try
-            let root = JsonNode.Parse(body)
-
-            if isNull root then
-                Error(SocketUrlRejected(Constants.Lovense.GetSocketUrl, None, "Lovense returned empty socket URL response."))
-            else
-                let code = Json.tryInt Constants.Lovense.CodeField root
-                let message = Json.tryString Constants.Lovense.MessageField root |> Option.defaultValue ""
-
-                match code with
-                | Some Constants.Lovense.SuccessCode ->
-                    let data = Json.tryGet Constants.Lovense.DataField root
-
-                    match
-                        data |> Option.bind (Json.tryString Constants.Lovense.SocketIoUrlField),
-                        data |> Option.bind (Json.tryString Constants.Lovense.SocketIoPathField)
-                    with
-                    | Some socketIoUrl, Some socketIoPath
-                        when not (String.IsNullOrWhiteSpace socketIoUrl)
-                             && not (String.IsNullOrWhiteSpace socketIoPath) ->
-                        Ok
-                            {
-                                SocketIoUrl = socketIoUrl
-                                SocketIoPath = socketIoPath
-                            }
-
-                    | _ ->
-                        Error(SocketUrlRejected(Constants.Lovense.GetSocketUrl, code, "Socket URL response did not include socketIoUrl/socketIoPath."))
-
-                | _ ->
-                    Error(SocketUrlRejected(Constants.Lovense.GetSocketUrl, code, message))
-        with ex ->
-            Error(SocketUrlRequestFailed(Constants.Lovense.GetSocketUrl, $"Could not parse socket URL response: {ex.Message}"))
-
-    let requestSocketUrlAsync (authToken: string) (ct: CancellationToken) =
-        task {
-            let correlationId = Guid.NewGuid().ToString("N")
-
-            logger.Info(
-                "lovense.socket_url.request",
-                "Requesting Lovense Socket.IO URL.",
-                {|
-                    correlationId = correlationId
-                    url = Constants.Lovense.GetSocketUrl
-                    platform = config.Platform
-                    authToken = Constants.Lovense.AuthTokenRedacted
-                    rawLogged = logger.IsRawLovenseEnabled
-                |}
-            )
-
-            logger.RawLovenseSocketHttp(correlationId, Constants.Lovense.GetSocketUrl, "request", None, redactedSocketUrlRequestBody)
-
-            try
-                use request = new HttpRequestMessage(HttpMethod.Post, Constants.Lovense.GetSocketUrl)
-                request.Content <- new StringContent(socketUrlRequestBody authToken, Encoding.UTF8, Constants.Lovense.JsonMediaType)
-
-                let! response = http.SendAsync(request, ct)
-                let! responseBody = response.Content.ReadAsStringAsync(ct)
-
-                logger.RawLovenseSocketHttp(correlationId, Constants.Lovense.GetSocketUrl, "response", Some(int response.StatusCode), responseBody)
-
-                if not response.IsSuccessStatusCode then
-                    return Error(SocketUrlRequestFailed(Constants.Lovense.GetSocketUrl, $"HTTP {(int response.StatusCode)}: {responseBody}"))
-                else
-                    match parseSocketUrlResponse responseBody with
-                    | Ok info ->
-                        logger.Info(
-                            "lovense.socket_url.success",
-                            "Received Lovense Socket.IO connection details.",
-                            {|
-                                correlationId = correlationId
-                                socketIoUrl = info.SocketIoUrl
-                                socketIoPath = info.SocketIoPath
-                            |}
-                        )
-
-                        return Ok info
-
-                    | Error error ->
-                        logger.Warn(
-                            "lovense.socket_url.rejected",
-                            "Lovense rejected or returned unusable Socket.IO connection details.",
-                            {|
-                                correlationId = correlationId
-                                error = string error
-                            |}
-                        )
-
-                        return Error error
-            with
-            | :? OperationCanceledException ->
-                return raise (OperationCanceledException())
-            | ex ->
-                return Error(SocketUrlRequestFailed(Constants.Lovense.GetSocketUrl, ex.Message))
-        }
-
-    let requestAuthTokenAsync (developerToken: string) (ct: CancellationToken) =
-        task {
-            let correlationId = Guid.NewGuid().ToString("N")
-
-            logger.Info(
-                "lovense.auth_token.request",
-                "Requesting Lovense user auth token from local developer settings.",
-                {|
-                    correlationId = correlationId
-                    url = Constants.Lovense.GetToken
-                    userIdConfigured = config.Developer.UserId.IsSome
-                    userNameConfigured = config.Developer.UserName.IsSome
-                    userEmailConfigured = config.Developer.UserEmail.IsSome
-                    developerToken = Constants.Lovense.AuthTokenRedacted
-                    rawLogged = logger.IsRawLovenseEnabled
-                |}
-            )
-
-            logger.RawLovenseSocketHttp(correlationId, Constants.Lovense.GetToken, "request", None, redactedTokenRequestBody)
-
-            try
-                use request = new HttpRequestMessage(HttpMethod.Post, Constants.Lovense.GetToken)
-                request.Content <- new StringContent(tokenRequestBody developerToken, Encoding.UTF8, Constants.Lovense.JsonMediaType)
-
-                let! response = http.SendAsync(request, ct)
-                let! responseBody = response.Content.ReadAsStringAsync(ct)
-
-                logger.RawLovenseSocketHttp(correlationId, Constants.Lovense.GetToken, "response", Some(int response.StatusCode), responseBody)
-
-                if not response.IsSuccessStatusCode then
-                    return Error(SocketUrlRequestFailed(Constants.Lovense.GetToken, $"HTTP {(int response.StatusCode)}: {responseBody}"))
-                else
-                    match parseTokenResponse responseBody with
-                    | Ok authToken ->
-                        logger.Info(
-                            "lovense.auth_token.success",
-                            "Received Lovense user auth token.",
-                            {| correlationId = correlationId; authToken = Constants.Lovense.AuthTokenRedacted |}
-                        )
-
-                        return Ok authToken
-                    | Error error ->
-                        logger.Warn(
-                            "lovense.auth_token.rejected",
-                            "Lovense rejected or returned unusable auth token response.",
-                            {| correlationId = correlationId; error = string error |}
-                        )
-
-                        return Error error
-            with
-            | :? OperationCanceledException ->
-                return raise (OperationCanceledException())
-            | ex ->
-                return Error(SocketUrlRequestFailed(Constants.Lovense.GetToken, ex.Message))
-        }
-
     let resolveAuthTokenAsync (ct: CancellationToken) =
         task {
-            match generatedAuthToken |> Option.orElse config.AuthToken with
+            match generatedAuthToken with
             | Some authToken when not (String.IsNullOrWhiteSpace authToken) ->
                 return Ok authToken
 
             | _ ->
-                match config.Developer.Token, config.Developer.UserId with
-                | Some developerToken, Some _ when not (String.IsNullOrWhiteSpace developerToken) ->
-                    let! tokenResult = requestAuthTokenAsync developerToken ct
+                let! tokenResult = Auth.requestAuthTokenAsync http logger config.Developer ct
 
-                    match tokenResult with
-                    | Ok authToken ->
-                        generatedAuthToken <- Some authToken
-                        return Ok authToken
-                    | Error error ->
-                        return Error error
-
-                | _ ->
-                    return Error MissingAuthToken
-        }
-
-    let logSocketEvent eventName correlationId (ctx: IEventContext) =
-        let raw = ctx.RawText
-
-        if eventName = Constants.Lovense.DeviceInfoListen then
-            match tryExtractSupportedFunctions raw with
-            | Some functions ->
-                supportedFunctions <- Some functions
-                logger.Info(
-                    "lovense.capabilities.updated",
-                    "Updated Lovense supported function set from device info.",
-                    {|
-                        correlationId = correlationId
-                        supportedFunctions = functions |> Set.toList
-                    |}
-                )
-            | None ->
-                logger.Warn(
-                    "lovense.capabilities.unknown",
-                    "Lovense device info did not expose supported function names.",
-                    {| correlationId = correlationId |}
-                )
-
-        logger.RawLovenseSocketEvent(correlationId, eventName, "receive", raw)
-
-        logger.Info(
-            $"lovense.socket.{eventName}",
-            "Received Lovense Socket.IO event.",
-            {|
-                correlationId = correlationId
-                eventName = eventName
-                rawLength = if isNull raw then 0 else raw.Length
-                rawLogged = logger.IsRawLovenseEnabled
-            |}
-        )
-
-    let configureSocket (info: SocketUrlInfo) =
-        let client = new SocketIO(Uri(info.SocketIoUrl))
-
-        client.Options.Path <- info.SocketIoPath
-        client.Options.Transport <- TransportProtocol.WebSocket
-        client.Options.EIO <- EngineIO.V3
-        client.Options.ConnectionTimeout <- TimeSpan.FromMilliseconds(float config.ConnectTimeoutMs)
-        client.Options.Reconnection <- true
-        client.Options.ReconnectionDelayMax <- config.ConnectTimeoutMs
-
-        client.OnConnected.Add(fun _ ->
-            logger.Info(
-                "lovense.socket.connected",
-                "Connected to Lovense Socket.IO.",
-                {|
-                    socketIoUrl = info.SocketIoUrl
-                    socketIoPath = info.SocketIoPath
-                    socketId = client.Id
-                    socketIoVersion = Constants.Lovense.SocketIoVersion
-                |}
-            ))
-
-        client.OnDisconnected.Add(fun reason ->
-            logger.Warn(
-                "lovense.socket.disconnected",
-                "Disconnected from Lovense Socket.IO.",
-                {| reason = reason |}
-            ))
-
-        client.OnError.Add(fun message ->
-            logger.Error(
-                "lovense.socket.error",
-                "Lovense Socket.IO error.",
-                {| message = message |}
-            ))
-
-        client.OnReconnectAttempt.Add(fun attempt ->
-            logger.Warn(
-                "lovense.socket.reconnect_attempt",
-                "Lovense Socket.IO reconnect attempt.",
-                {| attempt = attempt |}
-            ))
-
-        for eventName in
-            [
-                Constants.Lovense.DeviceInfoListen
-                Constants.Lovense.AppStatusListen
-                Constants.Lovense.AppOnlineListen
-            ] do
-            client.On(
-                eventName,
-                Func<IEventContext, Task>(fun ctx ->
-                    logSocketEvent eventName (Guid.NewGuid().ToString("N")) ctx
-                    Task.CompletedTask)
-            )
-
-        client.On(
-            Constants.Lovense.GetQrCodeListen,
-            Func<IEventContext, Task>(fun ctx ->
-                let raw = ctx.RawText
-                let correlationId = Guid.NewGuid().ToString("N")
-                logger.RawLovenseSocketEvent(correlationId, Constants.Lovense.GetQrCodeListen, "receive", raw)
-
-                if not qrCodeLogged then
-                    qrCodeLogged <- true
-                    printfn "Lovense QR code event received. See track.log or lovense.log if raw logging is enabled."
-
-                logger.Info(
-                    "lovense.socket.qrcode",
-                    "Lovense QR code information received.",
-                    {|
-                        correlationId = correlationId
-                        rawLength = if isNull raw then 0 else raw.Length
-                        rawLogged = logger.IsRawLovenseEnabled
-                    |}
-                )
-
-                Task.CompletedTask)
-        )
-
-        client
-
-    let connectSocketAsync (info: SocketUrlInfo) (ct: CancellationToken) =
-        task {
-            try
-                let client = configureSocket info
-                use timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct)
-                timeoutCts.CancelAfter(config.ConnectTimeoutMs)
-
-                do! client.ConnectAsync(timeoutCts.Token)
-
-                socket <- Some client
-                socketInfo <- Some info
-
-                let qrAckId = Guid.NewGuid().ToString("N")
-                let qrPayload = $"""{{"{Constants.Lovense.AckIdField}":"{qrAckId}"}}"""
-
-                logger.RawLovenseSocketEvent(qrAckId, Constants.Lovense.GetQrCodeEmit, "emit", qrPayload)
-
-                let qrData: obj seq =
-                    [ JsonSerializer.Deserialize<JsonElement>(qrPayload) :> obj ]
-
-                do! client.EmitAsync(Constants.Lovense.GetQrCodeEmit, qrData, timeoutCts.Token)
-
-                return
-                    Ok
-                        {
-                            Connected = client.Connected
-                            DryRun = false
-                            SocketIoUrl = Some info.SocketIoUrl
-                            SocketIoPath = Some info.SocketIoPath
-                            SocketId = if String.IsNullOrWhiteSpace client.Id then None else Some client.Id
-                        }
-            with
-            | :? OperationCanceledException ->
-                return raise (OperationCanceledException())
-            | ex ->
-                return Error(SocketConnectFailed(info.SocketIoUrl, info.SocketIoPath, ex.Message))
+                match tokenResult with
+                | Ok authToken ->
+                    generatedAuthToken <- Some authToken
+                    return Ok authToken
+                | Error error ->
+                    return Error error
         }
 
     member _.CommandUrl =
         match socketInfo with
         | Some info -> $"{info.SocketIoUrl} ({info.SocketIoPath})"
         | None -> Constants.Lovense.GetSocketUrl
+
+    member _.LatestDeviceInfo = latestDeviceInfo
 
     member _.EnsureConnectedAsync(ct: CancellationToken) =
         task {
@@ -571,15 +120,22 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                                 return Error error
 
                             | Ok authToken ->
-                                let! socketUrlResult = requestSocketUrlAsync authToken ct
+                                let! socketUrlResult = SocketUrl.requestSocketUrlAsync http logger config.Platform authToken ct
 
                                 match socketUrlResult with
                                 | Error error ->
                                     return Error error
 
                                 | Ok info ->
-                                    let! connected = connectSocketAsync info ct
-                                    return connected
+                                    let! connected = SocketRuntime.connectAsync config logger onDeviceInfo onQrCode info ct
+
+                                    match connected with
+                                    | Ok (client, state) ->
+                                        socket <- Some client
+                                        socketInfo <- Some info
+                                        return Ok state
+                                    | Error error ->
+                                        return Error error
                     finally
                         connectGate.Release() |> ignore
         }
@@ -587,12 +143,13 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
     member this.SendCommandPlanAsync(plan: LovenseCommandPlan, requestedValue: int, ct: CancellationToken) =
         task {
             let safeValue = requestedValue |> Shared.clamp scoringConfig.MinIntensity scoringConfig.MaxIntensity
-            let correlationId = Guid.NewGuid().ToString("N")
-            let candidateActionString = Mapping.planActionString plan
+            let correlationId = Transport.newCorrelationId()
+            let candidateActionString = LovenseActionCodec.planActionString plan
             let filteredPlan, droppedActions = Mapping.filterByCapabilities config supportedFunctions plan
             let payload = createCommandPayload filteredPlan correlationId
-            let actionString = Mapping.planActionString filteredPlan
-            let commandReasons = filteredPlan.Reasons |> List.map Mapping.reasonToString
+            let actionString = LovenseActionCodec.planActionString filteredPlan
+            let commandReasons = filteredPlan.Reasons |> List.map LovenseActionCodec.reasonToString
+            let capabilitySource = if supportedFunctions.IsSome then "deviceInfo" elif config.Mapping.ForceSupportedFunctions.IsEmpty then "unknown" else "config"
 
             if config.DryRun then
                 logger.Info(
@@ -607,7 +164,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                         candidateAction = candidateActionString
                         droppedActions = droppedActions
                         reasons = commandReasons
-                        capabilitySource = if supportedFunctions.IsSome then "deviceInfo" elif config.Mapping.ForceSupportedFunctions.IsEmpty then "unknown" else "config"
+                        capabilitySource = capabilitySource
                         rawLogged = logger.IsRawLovenseEnabled
                     |}
                 )
@@ -640,37 +197,37 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                         return Error(NotConnected(SocketDisconnected "Socket disconnected before command emit."))
 
                     | Some client ->
-                        try
-                            use timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct)
-                            timeoutCts.CancelAfter(config.CommandAckTimeoutMs)
+                        logger.Info(
+                            "lovense.command.emit",
+                            "Emitting Lovense Socket API toy command.",
+                            {|
+                                correlationId = correlationId
+                                requestedValue = requestedValue
+                                safeValue = safeValue
+                                eventName = Constants.Lovense.SendToyCommandEmit
+                                action = actionString
+                                candidateAction = candidateActionString
+                                droppedActions = droppedActions
+                                reasons = commandReasons
+                                capabilitySource = capabilitySource
+                                payloadLength = payload.Length
+                                rawLogged = logger.IsRawLovenseEnabled
+                            |}
+                        )
 
-                            logger.Info(
-                                "lovense.command.emit",
-                                "Emitting Lovense Socket API toy command.",
-                                {|
-                                    correlationId = correlationId
-                                    requestedValue = requestedValue
-                                    safeValue = safeValue
-                                    eventName = Constants.Lovense.SendToyCommandEmit
-                                    action = actionString
-                                    candidateAction = candidateActionString
-                                    droppedActions = droppedActions
-                                    reasons = commandReasons
-                                    capabilitySource = if supportedFunctions.IsSome then "deviceInfo" elif config.Mapping.ForceSupportedFunctions.IsEmpty then "unknown" else "config"
-                                    payloadLength = payload.Length
-                                    rawLogged = logger.IsRawLovenseEnabled
-                                |}
-                            )
+                        let! emitResult =
+                            Transport.emitJsonAsync
+                                client
+                                logger
+                                Constants.Lovense.SendToyCommandEmit
+                                payload
+                                config.CommandAckTimeoutMs
+                                ct
 
-                            logger.RawLovenseSocketEvent(correlationId, Constants.Lovense.SendToyCommandEmit, "emit", payload)
-
-                            let payloadElement = JsonSerializer.Deserialize<JsonElement>(payload)
-
-                            let commandData: obj seq =
-                                [ payloadElement :> obj ]
-
-                            do! client.EmitAsync(Constants.Lovense.SendToyCommandEmit, commandData, timeoutCts.Token)
-
+                        match emitResult with
+                        | Error error ->
+                            return Error error
+                        | Ok _ ->
                             return
                                 Ok
                                     {
@@ -680,13 +237,6 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                                         CorrelationId = correlationId
                                         SocketConnected = client.Connected
                                     }
-                        with
-                        | :? OperationCanceledException when not ct.IsCancellationRequested ->
-                            return Error(CommandTimeout(Constants.Lovense.SendToyCommandEmit, config.CommandAckTimeoutMs))
-                        | :? OperationCanceledException ->
-                            return raise (OperationCanceledException())
-                        | ex ->
-                            return Error(CommandEmitFailed(Constants.Lovense.SendToyCommandEmit, ex.Message))
         }
 
     member this.SendVibrateAsync(value: int, ct: CancellationToken) =

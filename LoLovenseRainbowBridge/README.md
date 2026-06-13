@@ -21,7 +21,11 @@ LeagueOfLegends/Parser.fs         Riot Live Client JSON parser
 LeagueOfLegends/Mapper.fs         LoL snapshot → bridge snapshot
 LeagueOfLegends/LiveClient.fs     HTTP client for https://127.0.0.1:2999
 Lovense/Contracts.fs              Lovense command contracts
-Lovense/Client.fs                 Lovense Standard Socket API client
+Lovense/Auth.fs                   Lovense getToken flow
+Lovense/SocketUrl.fs              Lovense getSocketUrl flow
+Lovense/DeviceInfo.fs             toyList and capability parsing
+Lovense/SocketRuntime.fs          Socket.IO connection and listeners
+Lovense/Client.fs                 thin Lovense Socket API facade
 Recording/Recording.fs            SQLite gameplay recording and replay
 App/Runtime.fs                    orchestration loop
 ScreenCapture/ScreenCapture.fs    Windows screen-region capture
@@ -41,7 +45,6 @@ Then, with LoL game active and Lovense Remote running:
 
 ```powershell
 $env:DRY_RUN="false"
-$env:LOVENSE__AUTHTOKEN="your_lovense_user_auth_token"
 dotnet run
 ```
 
@@ -51,10 +54,20 @@ Optional:
 $env:LOVENSE_TOY_ID="your_toy_id"
 ```
 
-Lovense uses the Standard Socket API. The app expects a user `AuthToken` in
-`appsettings.Local.json` or `LOVENSE__AUTHTOKEN`. For local testing, the ignored
-local config can also hold Lovense developer data used to request an auth token;
-tracked config and logs redact those values.
+Lovense uses the Standard Socket API workflow:
+
+1. `getToken` with local-only developer settings:
+   `Lovense.Developer.Token`, `Lovense.Developer.UserId`, optional
+   `Lovense.Developer.UserName`, optional `Lovense.Developer.UserToken`.
+2. `getSocketUrl` with the runtime auth token returned by `getToken`.
+3. Socket.IO websocket connection.
+4. QR/device/app status listeners.
+5. `basicapi_send_toy_command_ts` Function commands.
+
+Do not configure `Lovense.AuthToken`; it is intentionally not a public app
+setting. Put real developer values only in ignored `appsettings.Local.json`.
+Tracked config and logs redact developer tokens, user tokens, and runtime auth
+tokens.
 
 ## Logs
 
