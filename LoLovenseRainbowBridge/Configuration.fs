@@ -13,6 +13,7 @@ type LovenseConfig =
         ToyId: string option
         Platform: string
         Developer: LovenseDeveloperConfig
+        LocalApi: LovenseLocalApiConfig
         CommandTimeSec: float
         DryRun: bool
         ConnectTimeoutMs: int
@@ -28,6 +29,14 @@ and LovenseDeveloperConfig =
         UserToken: string option
     }
 
+and LovenseLocalApiConfig =
+    {
+        EnableGetToys: bool
+        TimeoutMs: int
+        AllowSelfSignedCertificate: bool
+        HeaderPlatform: string
+    }
+
 and LovenseMappingConfig =
     {
         Mode: string
@@ -36,13 +45,52 @@ and LovenseMappingConfig =
         EnableDeathStop: bool
         EnableStrokeActions: bool
         EnableCapabilityFiltering: bool
+        EnableStereoVibration: bool
         DefaultStopPrevious: bool
         UnknownCapabilityMode: string
+        StereoMode: string
+        StereoFallback: string
+        LogToyViability: bool
         ForceSupportedFunctions: string list
         MaxActionIntensity: int
         PumpMax: int
         DepthMax: int
         StrokeMax: int
+        FunctionProfiles: LovenseFunctionProfileConfig list
+        Rules: LovenseRuleConfig list
+    }
+
+and LovenseFunctionProfileConfig =
+    {
+        FunctionName: string
+        Enabled: bool
+        InheritFrom: string
+        MinOutput: int
+        MaxOutput: int
+        BaseWeight: float
+        TimedWeight: float
+        EffectWeight: float
+        Curve: string
+        Smoothing: float
+    }
+
+and LovenseRuleConfig =
+    {
+        Name: string
+        Kind: string
+        Enabled: bool
+        TargetFunction: string
+        SourceFunction: string
+        Source: string
+        Operation: string
+        Value: float
+        DurationSec: float
+        StateSlot: string
+        Trigger: string
+        When: string
+        Layer: string
+        Min: float
+        Max: float
     }
 
 type RuntimeConfig =
@@ -211,6 +259,12 @@ module Configuration =
         if config.Lovense.CommandAckTimeoutMs <= 0 then
             invalidArg "Lovense.CommandAckTimeoutMs" "Lovense.CommandAckTimeoutMs must be greater than zero."
 
+        if config.Lovense.LocalApi.TimeoutMs <= 0 then
+            invalidArg "Lovense.LocalApi.TimeoutMs" "Lovense.LocalApi.TimeoutMs must be greater than zero."
+
+        if String.IsNullOrWhiteSpace config.Lovense.LocalApi.HeaderPlatform then
+            invalidArg "Lovense.LocalApi.HeaderPlatform" "Lovense.LocalApi.HeaderPlatform cannot be empty."
+
         let allowedMappingModes = set [ "SIMPLEVIBRATE"; "MULTIFUNCTION" ]
 
         if not (allowedMappingModes.Contains(config.Lovense.Mapping.Mode.ToUpperInvariant())) then
@@ -232,6 +286,82 @@ module Configuration =
 
         if not (allowedUnknownCapabilityModes.Contains(config.Lovense.Mapping.UnknownCapabilityMode.ToUpperInvariant())) then
             invalidArg "Lovense.Mapping.UnknownCapabilityMode" "Lovense.Mapping.UnknownCapabilityMode must be SafeUniversal or PassThrough."
+
+        let allowedStereoModes = set [ "AUTO"; "DISABLED"; "FORCE" ]
+
+        if not (allowedStereoModes.Contains(config.Lovense.Mapping.StereoMode.ToUpperInvariant())) then
+            invalidArg "Lovense.Mapping.StereoMode" "Lovense.Mapping.StereoMode must be Auto, Disabled, or Force."
+
+        let allowedStereoFallbacks = set [ "MAX"; "AVERAGE"; "LEFTONLY" ]
+
+        if not (allowedStereoFallbacks.Contains(config.Lovense.Mapping.StereoFallback.ToUpperInvariant())) then
+            invalidArg "Lovense.Mapping.StereoFallback" "Lovense.Mapping.StereoFallback must be Max, Average, or LeftOnly."
+
+        let knownLovenseFunctions =
+            set
+                [
+                    "VIBRATE"
+                    "VIBRATE1"
+                    "VIBRATE2"
+                    "ROTATE"
+                    "PUMP"
+                    "THRUSTING"
+                    "FINGERING"
+                    "SUCTION"
+                    "DEPTH"
+                    "STROKE"
+                    "OSCILLATE"
+                    "ALL"
+                    "STOP"
+                ]
+
+        let knownRuleKinds =
+            set
+                [
+                    "BASEMODIFIER"
+                    "THRESHOLDMODIFIER"
+                    "TIMEDCONTRIBUTION"
+                    "EFFECT"
+                    "STATETRANSITION"
+                    "CAPABILITYFALLBACK"
+                    "FUNCTIONINHERITANCE"
+                    "POSITIONMODULATION"
+                ]
+
+        let knownRuleOperations =
+            set [ "SET"; "ADD"; "MULTIPLY"; "TRACKMAX"; "CLAMPMIN"; "STARTINCARNATION"; "MULTIPLYINHERITED" ]
+
+        for profile in config.Lovense.Mapping.FunctionProfiles do
+            if not (knownLovenseFunctions.Contains(profile.FunctionName.ToUpperInvariant())) then
+                invalidArg "Lovense.Mapping.FunctionProfiles.FunctionName" $"Unknown Lovense function profile: {profile.FunctionName}"
+
+            if not (String.IsNullOrWhiteSpace profile.InheritFrom)
+               && not (knownLovenseFunctions.Contains(profile.InheritFrom.ToUpperInvariant())) then
+                invalidArg "Lovense.Mapping.FunctionProfiles.InheritFrom" $"Unknown Lovense inherit source: {profile.InheritFrom}"
+
+            if profile.MinOutput < 0 || profile.MaxOutput < profile.MinOutput then
+                invalidArg "Lovense.Mapping.FunctionProfiles.Output" $"Invalid output range for {profile.FunctionName}."
+
+            if profile.Smoothing < 0.0 || profile.Smoothing > 1.0 then
+                invalidArg "Lovense.Mapping.FunctionProfiles.Smoothing" $"Smoothing for {profile.FunctionName} must be in range 0.0..1.0."
+
+        for rule in config.Lovense.Mapping.Rules do
+            if String.IsNullOrWhiteSpace rule.Name then
+                invalidArg "Lovense.Mapping.Rules.Name" "Every Lovense rule must have a name."
+
+            if not (knownRuleKinds.Contains(rule.Kind.ToUpperInvariant())) then
+                invalidArg "Lovense.Mapping.Rules.Kind" $"Unknown Lovense rule kind: {rule.Kind}"
+
+            if not (knownRuleOperations.Contains(rule.Operation.ToUpperInvariant())) then
+                invalidArg "Lovense.Mapping.Rules.Operation" $"Unknown Lovense rule operation: {rule.Operation}"
+
+            if not (String.IsNullOrWhiteSpace rule.TargetFunction)
+               && not (knownLovenseFunctions.Contains(rule.TargetFunction.ToUpperInvariant())) then
+                invalidArg "Lovense.Mapping.Rules.TargetFunction" $"Unknown Lovense rule target function: {rule.TargetFunction}"
+
+            if not (String.IsNullOrWhiteSpace rule.SourceFunction)
+               && not (knownLovenseFunctions.Contains(rule.SourceFunction.ToUpperInvariant())) then
+                invalidArg "Lovense.Mapping.Rules.SourceFunction" $"Unknown Lovense rule source function: {rule.SourceFunction}"
 
         if config.Scoring.MinIntensity > config.Scoring.MaxIntensity then
             invalidArg "Scoring.MinIntensity" "Scoring.MinIntensity cannot be greater than Scoring.MaxIntensity."
@@ -369,6 +499,13 @@ module Configuration =
                             UserName = optionalString root "Lovense:Developer:UserName"
                             UserToken = optionalString root "Lovense:Developer:UserToken"
                         }
+                    LocalApi =
+                        {
+                            EnableGetToys = boolValue root "Lovense:LocalApi:EnableGetToys"
+                            TimeoutMs = intValue root "Lovense:LocalApi:TimeoutMs"
+                            AllowSelfSignedCertificate = boolValue root "Lovense:LocalApi:AllowSelfSignedCertificate"
+                            HeaderPlatform = requiredValue root "Lovense:LocalApi:HeaderPlatform"
+                        }
                     CommandTimeSec = floatValue root "Lovense:CommandTimeSec"
                     DryRun = boolValue root "Lovense:DryRun"
                     ConnectTimeoutMs = intValue root "Lovense:ConnectTimeoutMs"
@@ -381,8 +518,12 @@ module Configuration =
                             EnableDeathStop = boolValue root "Lovense:Mapping:EnableDeathStop"
                             EnableStrokeActions = boolValue root "Lovense:Mapping:EnableStrokeActions"
                             EnableCapabilityFiltering = boolValue root "Lovense:Mapping:EnableCapabilityFiltering"
+                            EnableStereoVibration = boolValue root "Lovense:Mapping:EnableStereoVibration"
                             DefaultStopPrevious = boolValue root "Lovense:Mapping:DefaultStopPrevious"
                             UnknownCapabilityMode = requiredValue root "Lovense:Mapping:UnknownCapabilityMode"
+                            StereoMode = requiredValue root "Lovense:Mapping:StereoMode"
+                            StereoFallback = requiredValue root "Lovense:Mapping:StereoFallback"
+                            LogToyViability = boolValue root "Lovense:Mapping:LogToyViability"
                             ForceSupportedFunctions =
                                 root.GetSection("Lovense:Mapping:ForceSupportedFunctions").Get<string[]>()
                                 |> Option.ofObj
@@ -392,6 +533,16 @@ module Configuration =
                             PumpMax = intValue root "Lovense:Mapping:PumpMax"
                             DepthMax = intValue root "Lovense:Mapping:DepthMax"
                             StrokeMax = intValue root "Lovense:Mapping:StrokeMax"
+                            FunctionProfiles =
+                                root.GetSection("Lovense:Mapping:FunctionProfiles").Get<LovenseFunctionProfileConfig[]>()
+                                |> Option.ofObj
+                                |> Option.map Array.toList
+                                |> Option.defaultValue []
+                            Rules =
+                                root.GetSection("Lovense:Mapping:Rules").Get<LovenseRuleConfig[]>()
+                                |> Option.ofObj
+                                |> Option.map Array.toList
+                                |> Option.defaultValue []
                         }
                 }
 

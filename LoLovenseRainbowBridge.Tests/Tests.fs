@@ -101,6 +101,13 @@ let lovenseConfig =
                 UserName = None
                 UserToken = None
             }
+        LocalApi =
+            {
+                EnableGetToys = true
+                TimeoutMs = 3000
+                AllowSelfSignedCertificate = true
+                HeaderPlatform = "LoL Lovense Bridge"
+            }
         CommandTimeSec = 2.0
         DryRun = true
         ConnectTimeoutMs = 1000
@@ -113,13 +120,19 @@ let lovenseConfig =
                 EnableDeathStop = true
                 EnableStrokeActions = false
                 EnableCapabilityFiltering = true
+                EnableStereoVibration = true
                 DefaultStopPrevious = true
                 UnknownCapabilityMode = "SafeUniversal"
+                StereoMode = "Auto"
+                StereoFallback = "Max"
+                LogToyViability = true
                 ForceSupportedFunctions = []
                 MaxActionIntensity = 20
                 PumpMax = 3
                 DepthMax = 3
                 StrokeMax = 100
+                FunctionProfiles = []
+                Rules = []
             }
     }
 
@@ -139,6 +152,67 @@ let loggingConfig directory =
         LogRawLeague = false
         LogRawLovense = false
         RawLogPrettyPrint = false
+    }
+
+let functionProfile name inheritFrom enabled =
+    {
+        FunctionName = name
+        Enabled = enabled
+        InheritFrom = inheritFrom
+        MinOutput = 0
+        MaxOutput = if name = "Pump" || name = "Depth" then 3 elif name = "Stroke" then 100 else 20
+        BaseWeight = 1.0
+        TimedWeight = 1.0
+        EffectWeight = 1.0
+        Curve = "Linear"
+        Smoothing = 0.0
+    }
+
+let rule name kind target sourceFunction source operation value stateSlot trigger whenValue =
+    {
+        Name = name
+        Kind = kind
+        Enabled = true
+        TargetFunction = target
+        SourceFunction = sourceFunction
+        Source = source
+        Operation = operation
+        Value = value
+        DurationSec = 0.0
+        StateSlot = stateSlot
+        Trigger = trigger
+        When = whenValue
+        Layer = ""
+        Min = 0.0
+        Max = 20.0
+    }
+
+let ruleEngineLovenseConfig =
+    {
+        lovenseConfig with
+            Mapping =
+                {
+                    lovenseConfig.Mapping with
+                        FunctionProfiles =
+                            [
+                                functionProfile "Vibrate" "" true
+                                functionProfile "Vibrate1" "Vibrate" true
+                                functionProfile "Vibrate2" "Vibrate" true
+                                functionProfile "All" "" true
+                            ]
+                        Rules =
+                            [
+                                rule "base" "BaseModifier" "Vibrate" "" "Breakdown.BaseIntensity" "Set" 1.0 "" "" ""
+                                rule "track-max" "ThresholdModifier" "" "" "FunctionBase:Vibrate" "TrackMax" 1.0 "MaxBaseThisIncarnation" "" ""
+                                rule "floor" "ThresholdModifier" "" "" "State.MaxBaseThisIncarnation" "Multiply" 0.5 "MinBaseThisIncarnation" "" ""
+                                rule "clamp-floor" "ThresholdModifier" "Vibrate" "" "State.MinBaseThisIncarnation" "ClampMin" 1.0 "" "" ""
+                                rule "inherit-left" "FunctionInheritance" "Vibrate1" "Vibrate" "" "Set" 1.0 "" "" ""
+                                rule "inherit-right" "FunctionInheritance" "Vibrate2" "Vibrate" "" "Set" 1.0 "" "" ""
+                                rule "top-left-left" "PositionModulation" "Vibrate1" "" "" "MultiplyInherited" 1.35 "" "" "TopLeft"
+                                rule "top-left-right" "PositionModulation" "Vibrate2" "" "" "MultiplyInherited" 0.35 "" "" "TopLeft"
+                                rule "kill-all" "TimedContribution" "All" "" "TemporaryEffect.KillPulseEffect" "Add" 1.0 "" "" ""
+                            ]
+                }
     }
 
 let testAssetPath fileName =
@@ -304,6 +378,203 @@ let ``lovense device info parser extracts toys and functions`` () =
     Assert.True(deviceInfo.SupportedFunctions.Value.Contains("Vibrate"))
     Assert.True(deviceInfo.SupportedFunctions.Value.Contains("Rotate"))
     Assert.True(deviceInfo.SupportedFunctions.Value.Contains("Pump"))
+    Assert.Single(deviceInfo.CapabilityProfiles) |> ignore
+    Assert.True(deviceInfo.CapabilityProfiles.Head.SupportedFunctions.Contains("Rotate"))
+
+[<Fact>]
+let ``lovense device info parser extracts per toy explicit functions`` () =
+    let raw =
+        """
+        {
+          "code": 0,
+          "data": {
+            "toyList": [
+              {
+                "id": "toy-1",
+                "name": "Gemini",
+                "toyType": "gemini",
+                "battery": 88,
+                "connected": true,
+                "fullFunctionNames": ["Vibrate1", "Vibrate2"],
+                "shortFunctionNames": ["Vibrate"]
+              }
+            ]
+          }
+        }
+        """
+
+    let deviceInfo = DeviceInfo.parse raw
+    let profile = Assert.Single(deviceInfo.CapabilityProfiles)
+
+    Assert.True(profile.ExplicitFunctions.Contains("Vibrate"))
+    Assert.True(profile.ExplicitFunctions.Contains("Vibrate1"))
+    Assert.True(profile.ExplicitFunctions.Contains("Vibrate2"))
+    Assert.True(profile.StereoVibrationSupported)
+
+[<Fact>]
+let ``lovense local get toys parser handles toys json string`` () =
+    let raw =
+        """
+        {
+          "code": 200,
+          "data": {
+            "toys": "{\"toy-1\":{\"id\":\"toy-1\",\"name\":\"Gemini\",\"nickName\":\"left-right\",\"status\":1,\"battery\":77,\"version\":\"1.0\",\"shortFunctionNames\":[\"Vibrate\"],\"fullFunctionNames\":[\"Vibrate1\",\"Vibrate2\"]}}"
+          }
+        }
+        """
+
+    let parsed = DeviceInfo.parseGetToys raw
+    let profile = Assert.Single(parsed.CapabilityProfiles)
+
+    Assert.Equal(Some "toy-1", profile.ToyId)
+    Assert.Equal(Some "Gemini", profile.Name)
+    Assert.True(profile.ExplicitFunctions.Contains("Vibrate1"))
+    Assert.True(profile.ExplicitFunctions.Contains("Vibrate2"))
+    Assert.True(profile.StereoVibrationSupported)
+
+[<Fact>]
+let ``lovense local get toys parser handles toys object`` () =
+    let raw =
+        """
+        {
+          "data": {
+            "toys": {
+              "toy-1": {
+                "id": "toy-1",
+                "name": "Ferri",
+                "fullFunctionNames": ["Vibrate"],
+                "shortFunctionNames": []
+              }
+            }
+          }
+        }
+        """
+
+    let parsed = DeviceInfo.parseGetToys raw
+    let profile = Assert.Single(parsed.CapabilityProfiles)
+
+    Assert.True(profile.ExplicitFunctions.Contains("Vibrate"))
+    Assert.False(profile.StereoVibrationSupported)
+
+[<Fact>]
+let ``lovense local get toys client posts command and parses response`` () =
+    let mutable capturedUrl = ""
+    let mutable capturedPlatform = ""
+    let mutable capturedBody = ""
+    let response =
+        """
+        {
+          "data": {
+            "toys": {
+              "toy-1": {
+                "id": "toy-1",
+                "name": "Gemini",
+                "fullFunctionNames": ["Vibrate1", "Vibrate2"]
+              }
+            }
+          }
+        }
+        """
+
+    use handler =
+        new StubHttpMessageHandler(
+            HttpStatusCode.OK,
+            response,
+            fun request body ->
+                capturedUrl <- request.RequestUri.ToString()
+                capturedPlatform <-
+                    if request.Headers.Contains(Constants.Lovense.PlatformHeader) then
+                        request.Headers.GetValues(Constants.Lovense.PlatformHeader) |> Seq.head
+                    else
+                        ""
+                capturedBody <- body
+        )
+
+    use http = new HttpClient(handler)
+    use logger = new StructuredSessionLogger(loggingConfig (tempPath "local-api-logs"))
+    let localConfig =
+        {
+            EnableGetToys = true
+            TimeoutMs = 3000
+            AllowSelfSignedCertificate = true
+            HeaderPlatform = "LoL Lovense Bridge"
+        }
+
+    let deviceInfo =
+        {
+            ToyList = []
+            SupportedFunctions = None
+            CapabilityProfiles = []
+            Domain = Some "127-0-0-1.lovense.club"
+            HttpsPort = Some 34567
+            HttpPort = None
+            WssPort = None
+        }
+
+    let result =
+        LocalApi.getToysAsync http logger localConfig deviceInfo CancellationToken.None
+        |> fun task -> task.GetAwaiter().GetResult()
+
+    match result with
+    | Error error ->
+        failwithf "GetToys failed: %A" error
+    | Ok parsed ->
+        let profile = Assert.Single(parsed.CapabilityProfiles)
+        Assert.Equal("https://127-0-0-1.lovense.club:34567/command", capturedUrl)
+        Assert.Equal("LoL Lovense Bridge", capturedPlatform)
+        Assert.Equal("""{"command":"GetToys"}""", capturedBody)
+        Assert.True(profile.StereoVibrationSupported)
+
+[<Fact>]
+let ``lovense toy capability inference detects stereo gemini and single ferri`` () =
+    let gemini =
+        DeviceInfo.inferToyCapabilityProfile
+            {
+                Id = Some "gemini"
+                Name = Some "Gemini"
+                ToyType = Some "gemini"
+                Nickname = None
+                Battery = Some 90
+                Connected = Some true
+                ExplicitFunctions = Set.empty
+            }
+
+    let ferri =
+        DeviceInfo.inferToyCapabilityProfile
+            {
+                Id = Some "ferri"
+                Name = Some "Ferri"
+                ToyType = Some "ferri"
+                Nickname = None
+                Battery = Some 90
+                Connected = Some true
+                ExplicitFunctions = Set.empty
+            }
+
+    Assert.True(gemini.StereoVibrationSupported)
+    Assert.True(gemini.SupportedFunctions.Contains(Constants.Lovense.Vibrate1Action))
+    Assert.True(gemini.SupportedFunctions.Contains(Constants.Lovense.Vibrate2Action))
+    Assert.False(ferri.StereoVibrationSupported)
+    Assert.True(ferri.SupportedFunctions.Contains(Constants.Lovense.VibrateAction))
+    Assert.False(ferri.SupportedFunctions.Contains(Constants.Lovense.RotateAction))
+
+[<Fact>]
+let ``lovense toy capability inference supports nora rotation`` () =
+    let nora =
+        DeviceInfo.inferToyCapabilityProfile
+            {
+                Id = Some "nora"
+                Name = Some "Nora"
+                ToyType = Some "nora"
+                Nickname = None
+                Battery = None
+                Connected = Some true
+                ExplicitFunctions = Set.empty
+            }
+
+    Assert.True(nora.SupportedFunctions.Contains(Constants.Lovense.VibrateAction))
+    Assert.True(nora.SupportedFunctions.Contains(Constants.Lovense.RotateAction))
+    Assert.False(nora.StereoVibrationSupported)
 
 [<Fact>]
 let ``missing lovense developer credentials return result error`` () =
@@ -560,25 +831,267 @@ let ``parser reads active health and objective event fields`` () =
         Assert.Equal(Some true, parsed.Snapshot.Events.Head.Stolen)
 
 [<Fact>]
-let ``capability filtering removes unsupported actions and keeps safe fallback`` () =
+let ``capability resolver splits vibrate into stereo channels for gemini`` () =
+    let plan = Mapping.simpleVibratePlan lovenseConfig 12
+    let gemini =
+        DeviceInfo.inferToyCapabilityProfile
+            {
+                Id = Some "gemini"
+                Name = Some "Gemini"
+                ToyType = Some "gemini"
+                Nickname = None
+                Battery = None
+                Connected = Some true
+                ExplicitFunctions = Set.empty
+            }
+
+    let resolution = CapabilityResolver.resolve lovenseConfig [ gemini ] None plan
+
+    Assert.True(resolution.StereoApplied)
+    Assert.Equal("Vibrate1:12,Vibrate2:12", LovenseActionCodec.planActionString resolution.Plan)
+
+[<Fact>]
+let ``capability resolver keeps ferri single vibrate and drops rotate`` () =
     let plan =
         {
             Actions =
                 [
-                    { Function = Vibrate; Value = 10; MaxValue = 20; RangeStart = None }
-                    { Function = Rotate; Value = 10; MaxValue = 20; RangeStart = None }
+                    { Function = Vibrate; Value = 12; MaxValue = 20; RangeStart = None }
+                    { Function = Rotate; Value = 7; MaxValue = 20; RangeStart = None }
                 ]
-            Reasons = [ BasePerformance; TeamfightBurst ]
+            Reasons = [ BasePerformance ]
             TimeSec = 2.0
             StopPrevious = true
             ToyId = None
         }
 
-    let filtered, dropped = Mapping.filterByCapabilities lovenseConfig (Some(set [ "Vibrate" ])) plan
+    let ferri =
+        DeviceInfo.inferToyCapabilityProfile
+            {
+                Id = Some "ferri"
+                Name = Some "Ferri"
+                ToyType = Some "ferri"
+                Nickname = None
+                Battery = None
+                Connected = Some true
+                ExplicitFunctions = Set.empty
+            }
 
-    Assert.Single(dropped) |> ignore
-    Assert.Equal("Rotate:10", dropped.Head)
-    Assert.Equal("Vibrate:10", LovenseActionCodec.planActionString filtered)
+    let resolution = CapabilityResolver.resolve lovenseConfig [ ferri ] None plan
+
+    Assert.False(resolution.StereoApplied)
+    Assert.Contains("Rotate:7", resolution.DroppedActions)
+    Assert.Equal("Vibrate:12", LovenseActionCodec.planActionString resolution.Plan)
+
+[<Fact>]
+let ``stereo split maps left center and right position weights`` () =
+    Assert.Equal((10, 5), CapabilityResolver.stereoWeightsFromNormalizedX 10 0.0)
+    Assert.Equal((10, 10), CapabilityResolver.stereoWeightsFromNormalizedX 10 0.5)
+    Assert.Equal((5, 10), CapabilityResolver.stereoWeightsFromNormalizedX 10 1.0)
+
+[<Fact>]
+let ``stereo fallback collapses dual channels to vibrate`` () =
+    let stereoPlan =
+        {
+            Actions =
+                [
+                    { Function = Vibrate1; Value = 8; MaxValue = 20; RangeStart = None }
+                    { Function = Vibrate2; Value = 14; MaxValue = 20; RangeStart = None }
+                ]
+            Reasons = [ BasePerformance ]
+            TimeSec = 2.0
+            StopPrevious = true
+            ToyId = None
+        }
+
+    let disabledConfig =
+        {
+            lovenseConfig with
+                Mapping =
+                    {
+                        lovenseConfig.Mapping with
+                            StereoMode = "Disabled"
+                            StereoFallback = "Average"
+                    }
+        }
+
+    let ferri =
+        DeviceInfo.inferToyCapabilityProfile
+            {
+                Id = Some "ferri"
+                Name = Some "Ferri"
+                ToyType = Some "ferri"
+                Nickname = None
+                Battery = None
+                Connected = Some true
+                ExplicitFunctions = Set.empty
+            }
+
+    let resolution = CapabilityResolver.resolve disabledConfig [ ferri ] None stereoPlan
+
+    Assert.True(resolution.StereoFallbackApplied)
+    Assert.Equal("Vibrate:11", LovenseActionCodec.planActionString resolution.Plan)
+
+[<Fact>]
+let ``stereo force mode emits dual channels without device info`` () =
+    let forcedConfig =
+        {
+            lovenseConfig with
+                Mapping =
+                    {
+                        lovenseConfig.Mapping with
+                            StereoMode = "Force"
+                    }
+        }
+
+    let resolution = CapabilityResolver.resolve forcedConfig [] None (Mapping.simpleVibratePlan forcedConfig 9)
+
+    Assert.True(resolution.StereoApplied)
+    Assert.Equal("Vibrate1:9,Vibrate2:9", LovenseActionCodec.planActionString resolution.Plan)
+
+[<Fact>]
+let ``capability resolver honors configured toy id`` () =
+    let plan =
+        {
+            Actions =
+                [
+                    { Function = Vibrate; Value = 12; MaxValue = 20; RangeStart = None }
+                    { Function = Rotate; Value = 7; MaxValue = 20; RangeStart = None }
+                ]
+            Reasons = [ BasePerformance ]
+            TimeSec = 2.0
+            StopPrevious = true
+            ToyId = None
+        }
+
+    let config =
+        {
+            lovenseConfig with
+                ToyId = Some "ferri"
+        }
+
+    let nora =
+        DeviceInfo.inferToyCapabilityProfile
+            {
+                Id = Some "nora"
+                Name = Some "Nora"
+                ToyType = Some "nora"
+                Nickname = None
+                Battery = None
+                Connected = Some true
+                ExplicitFunctions = Set.empty
+            }
+
+    let ferri =
+        DeviceInfo.inferToyCapabilityProfile
+            {
+                Id = Some "ferri"
+                Name = Some "Ferri"
+                ToyType = Some "ferri"
+                Nickname = None
+                Battery = None
+                Connected = Some true
+                ExplicitFunctions = Set.empty
+            }
+
+    let resolution = CapabilityResolver.resolve config [ nora; ferri ] None plan
+
+    Assert.Contains("Rotate:7", resolution.DroppedActions)
+    Assert.Equal("Vibrate:12", LovenseActionCodec.planActionString resolution.Plan)
+
+[<Fact>]
+let ``lovense function ranges clamp protocol values`` () =
+    Assert.Equal(20, LovenseFunctionRanges.clamp Vibrate 99)
+    Assert.Equal(3, LovenseFunctionRanges.clamp Pump 99)
+    Assert.Equal(100, LovenseFunctionRanges.clamp Stroke 999)
+    Assert.Equal(0, LovenseFunctionRanges.clamp Rotate -4)
+
+[<Fact>]
+let ``rule command builder tracks max base and clamps to incarnation floor`` () =
+    let breakdown baseIntensity =
+        {
+            PerformanceScore = 0.0
+            NormalizedScore = 0.0
+            MultikillBase = 0.0
+            DeathPenalty = 0
+            RawBaseValue = float baseIntensity
+            LiveHealthPercent = Some 1.0
+            LiveHealthMultiplier = 1.0
+            HealthPressureMultiplier = 1.0
+            HealthAdjustedBaseValue = float baseIntensity
+            BaseIntensity = baseIntensity
+            TemporaryBoost = 0
+            TemporaryEffects = []
+            RawFinalValue = float baseIntensity
+            Intensity = baseIntensity
+        }
+
+    let builder = LovenseCommandBuilder(ruleEngineLovenseConfig, LovenseRuleInterpreter()) :> ILovenseCommandBuilder
+    let build baseIntensity =
+        builder.Build
+            {
+                PreviousState = initialState
+                Snapshot = snapshot (Some(1000.0, 1000.0)) []
+                EvolvedState = initialState
+                Breakdown = breakdown baseIntensity
+                Position = None
+                Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+            }
+
+    let first = build 18
+    let second = build 4
+
+    Assert.Equal(18.0, first.BuilderState.MaxBaseThisIncarnation)
+    Assert.Equal(9.0, second.BuilderState.MinBaseThisIncarnation)
+    let secondState = LovenseActionCodec.stateFromActions second.Plan.Actions
+    Assert.Equal(9, secondState["Vibrate"])
+
+[<Fact>]
+let ``rule command builder applies minimap stereo position modulation`` () =
+    let breakdown =
+        {
+            PerformanceScore = 0.0
+            NormalizedScore = 0.0
+            MultikillBase = 0.0
+            DeathPenalty = 0
+            RawBaseValue = 10.0
+            LiveHealthPercent = Some 1.0
+            LiveHealthMultiplier = 1.0
+            HealthPressureMultiplier = 1.0
+            HealthAdjustedBaseValue = 10.0
+            BaseIntensity = 10
+            TemporaryBoost = 0
+            TemporaryEffects = []
+            RawFinalValue = 10.0
+            Intensity = 10
+        }
+
+    let builder = LovenseCommandBuilder(ruleEngineLovenseConfig, LovenseRuleInterpreter()) :> ILovenseCommandBuilder
+    let frame =
+        builder.Build
+            {
+                PreviousState = initialState
+                Snapshot = snapshot (Some(1000.0, 1000.0)) []
+                EvolvedState = initialState
+                Breakdown = breakdown
+                Position =
+                    Some
+                        {
+                            NormalizedX = 0.1
+                            NormalizedY = 0.1
+                            Confidence = 0.9
+                            Quadrant = "TopLeft"
+                            Zone = "TopLane"
+                            DetectionMethod = "test"
+                        }
+                Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
+            }
+
+    let state = LovenseActionCodec.stateFromActions frame.Plan.Actions
+
+    Assert.Equal(10, state["Vibrate"])
+    Assert.Equal(14, state["Vibrate1"])
+    Assert.Equal(4, state["Vibrate2"])
 
 [<Fact>]
 let ``default configuration enables position rotation`` () =
@@ -591,12 +1104,17 @@ let ``default configuration enables position rotation`` () =
     Assert.True(config.Recording.Enabled)
     Assert.Equal("data/gameplay.sqlite", config.Recording.DatabasePath.Replace('\\', '/'))
     Assert.Equal(100, config.Recording.SliceMs)
+    Assert.True(config.Lovense.LocalApi.EnableGetToys)
+    Assert.NotEmpty(config.Lovense.Mapping.FunctionProfiles)
+    Assert.NotEmpty(config.Lovense.Mapping.Rules)
 
 [<Fact>]
 let ``lovense action string parses to normalized function state`` () =
-    let state = LovenseActionCodec.stateFromActionString "Vibrate:10,Rotate:7,Pump:3,Stroke:0-80"
+    let state = LovenseActionCodec.stateFromActionString "Vibrate:10,Vibrate1:12,Vibrate2:14,Rotate:7,Pump:3,Stroke:0-80"
 
     Assert.Equal(10, state["Vibrate"])
+    Assert.Equal(12, state["Vibrate1"])
+    Assert.Equal(14, state["Vibrate2"])
     Assert.Equal(7, state["Rotate"])
     Assert.Equal(3, state["Pump"])
     Assert.Equal(80, state["Stroke"])

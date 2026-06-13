@@ -9,12 +9,19 @@ open SocketIOClient
 type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: StructuredSessionLogger) =
 
     let http = Shared.insecureHttpClient ()
+    let localHttp =
+        if config.LocalApi.AllowSelfSignedCertificate then
+            Shared.insecureHttpClient ()
+        else
+            new System.Net.Http.HttpClient()
+
     let connectGate = new Threading.SemaphoreSlim(1, 1)
 
     let mutable socket: SocketIO option = None
     let mutable socketInfo: SocketUrlInfo option = None
     let mutable qrCodeLogged = false
     let mutable supportedFunctions: Set<string> option = None
+    let mutable capabilityProfiles: LovenseToyCapabilityProfile list = []
     let mutable generatedAuthToken: string option = None
     let mutable latestDeviceInfo: LovenseDeviceInfo option = None
 
@@ -24,12 +31,36 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
     let escapeJsonString (value: string) =
         value.Replace("\\", "\\\\").Replace("\"", "\\\"")
 
-    let onDeviceInfo (deviceInfo: LovenseDeviceInfo) =
+    let applyDeviceInfo (deviceInfo: LovenseDeviceInfo) =
         latestDeviceInfo <- Some deviceInfo
+        capabilityProfiles <- deviceInfo.CapabilityProfiles
 
         match deviceInfo.SupportedFunctions with
         | Some functions -> supportedFunctions <- Some functions
         | None -> ()
+
+    let onDeviceInfo (deviceInfo: LovenseDeviceInfo) =
+        task {
+            applyDeviceInfo deviceInfo
+
+            if config.LocalApi.EnableGetToys then
+                let! localResult = LocalApi.getToysAsync localHttp logger config.LocalApi deviceInfo CancellationToken.None
+
+                match localResult with
+                | Ok localInfo when not localInfo.CapabilityProfiles.IsEmpty ->
+                    let merged =
+                        {
+                            deviceInfo with
+                                ToyList = localInfo.ToyList
+                                SupportedFunctions = localInfo.SupportedFunctions |> Option.orElse deviceInfo.SupportedFunctions
+                                CapabilityProfiles = localInfo.CapabilityProfiles
+                        }
+
+                    applyDeviceInfo merged
+
+                | _ ->
+                    ()
+        }
 
     let onQrCode () =
         if not qrCodeLogged then
@@ -145,11 +176,13 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
             let safeValue = requestedValue |> Shared.clamp scoringConfig.MinIntensity scoringConfig.MaxIntensity
             let correlationId = Transport.newCorrelationId()
             let candidateActionString = LovenseActionCodec.planActionString plan
-            let filteredPlan, droppedActions = Mapping.filterByCapabilities config supportedFunctions plan
+            let capabilityResolution = CapabilityResolver.resolve config capabilityProfiles supportedFunctions plan
+            let filteredPlan = capabilityResolution.Plan
+            let droppedActions = capabilityResolution.DroppedActions
             let payload = createCommandPayload filteredPlan correlationId
             let actionString = LovenseActionCodec.planActionString filteredPlan
             let commandReasons = filteredPlan.Reasons |> List.map LovenseActionCodec.reasonToString
-            let capabilitySource = if supportedFunctions.IsSome then "deviceInfo" elif config.Mapping.ForceSupportedFunctions.IsEmpty then "unknown" else "config"
+            let capabilitySource = capabilityResolution.CapabilitySource
 
             if config.DryRun then
                 logger.Info(
@@ -163,6 +196,9 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                         action = actionString
                         candidateAction = candidateActionString
                         droppedActions = droppedActions
+                        finalActions = capabilityResolution.FinalActions
+                        stereoApplied = capabilityResolution.StereoApplied
+                        stereoFallbackApplied = capabilityResolution.StereoFallbackApplied
                         reasons = commandReasons
                         capabilitySource = capabilitySource
                         rawLogged = logger.IsRawLovenseEnabled
@@ -208,6 +244,9 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                                 action = actionString
                                 candidateAction = candidateActionString
                                 droppedActions = droppedActions
+                                finalActions = capabilityResolution.FinalActions
+                                stereoApplied = capabilityResolution.StereoApplied
+                                stereoFallbackApplied = capabilityResolution.StereoFallbackApplied
                                 reasons = commandReasons
                                 capabilitySource = capabilitySource
                                 payloadLength = payload.Length
@@ -269,3 +308,4 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
 
             connectGate.Dispose()
             http.Dispose()
+            localHttp.Dispose()

@@ -44,6 +44,34 @@ Let the bridge learn preferred intensity over time:
 
 This should be opt-in and stored locally, with an easy reset.
 
+## Per-Toy Feeling Calibration
+
+Capability-aware mapping now knows what a toy can probably do, but not how each
+function feels to a specific person. A calibration mode could ask for quick
+ratings after short test pulses:
+
+- comfortable maximum per function and per toy
+- preferred stereo balance for dual-vibration toys
+- which functions feel too sharp, too soft, or too distracting
+- separate profiles for playful, restrained, and intense sessions
+
+The bridge could then keep the same game logic while translating it through a
+personal comfort curve.
+
+## Multi-Toy Orchestration
+
+Current capability resolution keeps command output viable, especially for one
+target toy. A later version could intentionally orchestrate multiple connected
+toys:
+
+- route base pressure to one toy and event bursts to another
+- use stereo toys for map position and single-motor toys for heartbeat
+- send separate per-toy Function commands when capabilities diverge
+- save per-toy timelines in SQLite replay
+
+This should stay explicit, because accidental all-toy playback would be a very
+different experience from a single selected toy.
+
 ## Pattern Presets
 
 Add named pattern presets:

@@ -62,6 +62,50 @@ module Transport =
                 return Error(SocketUrlRequestFailed(url, ex.Message))
         }
 
+    let postJsonWithHeadersAsync
+        (http: HttpClient)
+        (logger: StructuredSessionLogger)
+        (correlationId: string)
+        (url: string)
+        (headers: (string * string) list)
+        (redactedRequestBody: string)
+        (requestBody: string)
+        (ct: CancellationToken)
+        =
+        task {
+            logger.RawLovenseSocketHttp(correlationId, url, "request", None, redactedRequestBody)
+
+            try
+                use request = new HttpRequestMessage(HttpMethod.Post, url)
+                request.Content <- new StringContent(requestBody, Encoding.UTF8, Constants.Lovense.JsonMediaType)
+
+                for name, value in headers do
+                    request.Headers.TryAddWithoutValidation(name, value) |> ignore
+
+                let! response = http.SendAsync(request, ct)
+                let! responseBody = response.Content.ReadAsStringAsync(ct)
+                let statusCode = int response.StatusCode
+
+                logger.RawLovenseSocketHttp(correlationId, url, "response", Some statusCode, responseBody)
+
+                if not response.IsSuccessStatusCode then
+                    return Error(SocketUrlRequestFailed(url, $"HTTP {statusCode}: {responseBody}"))
+                else
+                    return
+                        Ok
+                            {
+                                CorrelationId = correlationId
+                                Url = url
+                                StatusCode = statusCode
+                                Body = responseBody
+                            }
+            with
+            | :? OperationCanceledException ->
+                return raise (OperationCanceledException())
+            | ex ->
+                return Error(SocketUrlRequestFailed(url, ex.Message))
+        }
+
     let emitJsonAsync
         (client: SocketIO)
         (logger: StructuredSessionLogger)

@@ -9,8 +9,35 @@ open SocketIOClient.Common
 
 module SocketRuntime =
 
-    let private logDeviceInfo (logger: StructuredSessionLogger) correlationId raw =
+    let private logDeviceInfo (config: LovenseConfig) (logger: StructuredSessionLogger) correlationId raw =
         let deviceInfo = DeviceInfo.parse raw
+
+        if config.Mapping.LogToyViability then
+            logger.Info(
+                "lovense.toys.available",
+                "Lovense toy capability profiles updated.",
+                {|
+                    correlationId = correlationId
+                    toyCount = deviceInfo.CapabilityProfiles.Length
+                    toys =
+                        deviceInfo.CapabilityProfiles
+                        |> List.map (fun profile ->
+                            {|
+                                id = profile.ToyId |> Option.map (fun _ -> "<configured>")
+                                name = profile.Name
+                                toyType = profile.ToyType
+                                nickname = profile.Nickname
+                                battery = profile.Battery
+                                connected = profile.Connected
+                                explicitFunctions = profile.ExplicitFunctions |> Set.toList
+                                inferredFunctions = profile.InferredFunctions |> Set.toList
+                                supportedFunctions = profile.SupportedFunctions |> Set.toList
+                                stereoVibrationSupported = profile.StereoVibrationSupported
+                                capabilitySource = string profile.CapabilitySource
+                                notes = profile.Notes
+                            |})
+                |}
+            )
 
         match deviceInfo.SupportedFunctions with
         | Some functions ->
@@ -57,24 +84,27 @@ module SocketRuntime =
 
         deviceInfo
 
-    let private logSocketEvent eventName (logger: StructuredSessionLogger) onDeviceInfo correlationId (ctx: IEventContext) =
-        let raw = ctx.RawText
+    let private logSocketEvent eventName (config: LovenseConfig) (logger: StructuredSessionLogger) onDeviceInfo correlationId (ctx: IEventContext) =
+        task {
+            let raw = ctx.RawText
 
-        logger.RawLovenseSocketEvent(correlationId, eventName, "receive", raw)
+            logger.RawLovenseSocketEvent(correlationId, eventName, "receive", raw)
 
-        if eventName = Constants.Lovense.DeviceInfoListen then
-            logDeviceInfo logger correlationId raw |> onDeviceInfo
+            if eventName = Constants.Lovense.DeviceInfoListen then
+                let deviceInfo = logDeviceInfo config logger correlationId raw
+                do! onDeviceInfo deviceInfo
 
-        logger.Info(
-            $"lovense.socket.{eventName}",
-            "Received Lovense Socket.IO event.",
-            {|
-                correlationId = correlationId
-                eventName = eventName
-                rawLength = if isNull raw then 0 else raw.Length
-                rawLogged = logger.IsRawLovenseEnabled
-            |}
-        )
+            logger.Info(
+                $"lovense.socket.{eventName}",
+                "Received Lovense Socket.IO event.",
+                {|
+                    correlationId = correlationId
+                    eventName = eventName
+                    rawLength = if isNull raw then 0 else raw.Length
+                    rawLogged = logger.IsRawLovenseEnabled
+                |}
+            )
+        }
 
     let configure (config: LovenseConfig) (logger: StructuredSessionLogger) onDeviceInfo onQrCode (info: SocketUrlInfo) =
         let client = new SocketIO(Uri(info.SocketIoUrl))
@@ -128,8 +158,7 @@ module SocketRuntime =
             client.On(
                 eventName,
                 Func<IEventContext, Task>(fun ctx ->
-                    logSocketEvent eventName logger onDeviceInfo (Guid.NewGuid().ToString("N")) ctx
-                    Task.CompletedTask)
+                    logSocketEvent eventName config logger onDeviceInfo (Guid.NewGuid().ToString("N")) ctx)
             )
 
         client.On(

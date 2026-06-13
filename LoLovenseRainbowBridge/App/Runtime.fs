@@ -47,6 +47,15 @@ module Runtime =
             DetectionFailures = 0
         }
 
+    let private planningQuadrant normalizedX normalizedY =
+        if normalizedX >= 0.42 && normalizedX <= 0.58 && normalizedY >= 0.42 && normalizedY <= 0.58 then "Center"
+        elif normalizedX < 0.5 && normalizedY < 0.5 then "TopLeft"
+        elif normalizedX >= 0.5 && normalizedY < 0.5 then "TopRight"
+        elif normalizedX < 0.5 && normalizedY >= 0.5 then "BottomLeft"
+        elif normalizedX >= 0.5 && normalizedY >= 0.5 then "BottomRight"
+        elif normalizedX < 0.5 then "Left"
+        else "Right"
+
     let private recordLeagueFailure error failureState =
         {
             failureState with
@@ -193,6 +202,7 @@ module Runtime =
         (positionRotationConfig: PositionBasedRotationConfig)
         (leagueClient: LeagueLiveClient)
         (lovenseClient: LovenseClient)
+        (commandBuilder: ILovenseCommandBuilder)
         (logger: StructuredSessionLogger)
         (recorder: GameplayRecorder option)
         (recordingConfigSummary: obj)
@@ -227,7 +237,7 @@ module Runtime =
 
                     let! nextState, nextFailureState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger recorder state nextFailureState ct
                     do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
-                    return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger recorder recordingConfigSummary nextState nextFailureState positionRotationState ct
+                    return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextState nextFailureState positionRotationState ct
 
                 | Ok gameData ->
                     match Parser.parseGameSnapshotResult gameData.Root with
@@ -248,7 +258,7 @@ module Runtime =
 
                         let! nextState, nextFailureState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger recorder state nextFailureState ct
                         do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
-                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger recorder recordingConfigSummary nextState nextFailureState positionRotationState ct
+                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextState nextFailureState positionRotationState ct
 
                     | Ok parsed ->
                         let now = DateTimeOffset.UtcNow
@@ -258,9 +268,8 @@ module Runtime =
                         let evolved = evolve scoringConfig snapshot state |> updateHealthPressure scoringConfig snapshot
                         let breakdown = computeIntensityBreakdown scoringConfig snapshot evolved
                         let intensity = breakdown.Intensity
-                        let commandPlan = Mapping.plan lovenseConfig state snapshot evolved breakdown
 
-                        let commandPlanWithRotation =
+                        let planningPosition, positionRotationState =
                             if positionRotationConfig.Enable then
                                 let shouldCapture =
                                     match positionRotationState.LastCaptureTime with
@@ -297,31 +306,40 @@ module Runtime =
                                             match mappingMode with
                                             | Some mode ->
                                                 let rotationResult = PositionMapping.mapPositionToRotation playerPosition mode positionRotationConfig.RotationSensitivity
-                                                let enhancedPlan = Mapping.addRotationToPlan commandPlan rotationResult.RotationValue
+                                                let quadrant = planningQuadrant playerPosition.NormalizedX playerPosition.NormalizedY
+                                                let planningPosition =
+                                                    {
+                                                        NormalizedX = playerPosition.NormalizedX
+                                                        NormalizedY = playerPosition.NormalizedY
+                                                        Confidence = playerPosition.Confidence
+                                                        Quadrant = quadrant
+                                                        Zone = string rotationResult.Zone
+                                                        DetectionMethod = detectionResult.DetectionMethod
+                                                    }
                                                 
                                                 logger.Info(
-                                                    "runtime.position_rotation.success",
-                                                    "Position-based rotation applied.",
+                                                    "runtime.position_context.success",
+                                                    "Position context captured for Lovense rule planning.",
                                                     {|
                                                         normalizedX = playerPosition.NormalizedX
                                                         normalizedY = playerPosition.NormalizedY
                                                         confidence = playerPosition.Confidence
                                                         detectionMethod = detectionResult.DetectionMethod
                                                         templateConfigured = positionRotationConfig.TemplateImagePath.IsSome
-                                                        rotationValue = rotationResult.RotationValue
+                                                        quadrant = quadrant
                                                         mappingMethod = rotationResult.MappingMethod
                                                         zone = string rotationResult.Zone
                                                     |}
                                                 )
                                                 
-                                                enhancedPlan, nextPositionRotationState
+                                                Some planningPosition, nextPositionRotationState
                                             | None ->
                                                 logger.Warn(
                                                     "runtime.position_rotation.invalid_mode",
                                                     "Invalid mapping mode in configuration.",
                                                     {| mode = positionRotationConfig.MappingMode |}
                                                 )
-                                                commandPlan, nextPositionRotationState
+                                                None, nextPositionRotationState
                                         | None ->
                                             logger.Debug(
                                                 "runtime.position_rotation.no_detection",
@@ -332,22 +350,32 @@ module Runtime =
                                                     templateConfigured = positionRotationConfig.TemplateImagePath.IsSome
                                                 |}
                                             )
-                                            commandPlan, nextPositionRotationState
+                                            None, nextPositionRotationState
                                     with ex ->
                                         logger.Error(
                                             "runtime.position_rotation.error",
                                             "Error during position-based rotation detection.",
                                             {| error = ex.Message |}
                                         )
-                                        commandPlan, positionRotationState
+                                        None, positionRotationState
                                 else
-                                    commandPlan, positionRotationState
+                                    None, positionRotationState
                             else
-                                commandPlan, positionRotationState
+                                None, positionRotationState
 
-                        let commandPlan = fst commandPlanWithRotation
-                        let positionRotationState = snd commandPlanWithRotation
-                        let actionString = LovenseActionCodec.planActionString commandPlan
+                        let commandFrame =
+                            commandBuilder.Build
+                                {
+                                    PreviousState = state
+                                    Snapshot = snapshot
+                                    EvolvedState = evolved
+                                    Breakdown = breakdown
+                                    Position = planningPosition
+                                    Now = now
+                                }
+
+                        let commandPlan = commandFrame.Plan
+                        let actionString = commandFrame.ActionString
 
                         logger.Info(
                             "runtime.league.success",
@@ -419,6 +447,21 @@ module Runtime =
                                         actions = commandPlan.Actions |> List.map LovenseActionCodec.actionToString
                                         timeSec = commandPlan.TimeSec
                                         stopPrevious = commandPlan.StopPrevious
+                                        builderState = commandFrame.BuilderState
+                                        functionStates =
+                                            commandFrame.FunctionStates
+                                            |> Map.toList
+                                            |> List.map (fun (fn, layers) ->
+                                                {|
+                                                    functionName = LovenseActionCodec.actionName fn
+                                                    baseLayer = layers.Base
+                                                    timedLayer = layers.Timed
+                                                    effectLayer = layers.Effect
+                                                    inheritedLayer = layers.Inherited
+                                                    final = layers.Final
+                                                    contributions = layers.Contributions
+                                                |})
+                                        stateDiff = commandFrame.StateDiff
                                     |}
                             |}
                         )
@@ -518,7 +561,7 @@ module Runtime =
                         let nextGeneratorState, nextFailureState, delayMs = nextState
 
                         do! Task.Delay(delayMs, ct)
-                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger recorder recordingConfigSummary nextGeneratorState nextFailureState positionRotationState ct
+                        return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextGeneratorState nextFailureState positionRotationState ct
 
             with
             | :? OperationCanceledException ->
@@ -539,5 +582,5 @@ module Runtime =
                 let! nextState = handleUnavailable runtimeConfig lovenseConfig lovenseClient logger recorder state failureState ct
                 do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
                 let nextGeneratorState, nextFailureState = nextState
-                return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient logger recorder recordingConfigSummary nextGeneratorState nextFailureState positionRotationState ct
+                return! loop runtimeConfig scoringConfig lovenseConfig positionRotationConfig leagueClient lovenseClient commandBuilder logger recorder recordingConfigSummary nextGeneratorState nextFailureState positionRotationState ct
         }

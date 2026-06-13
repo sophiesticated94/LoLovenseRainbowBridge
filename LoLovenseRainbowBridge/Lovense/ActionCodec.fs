@@ -8,6 +8,8 @@ module LovenseActionCodec =
     let canonicalFunctions =
         [
             Constants.Lovense.VibrateAction
+            Constants.Lovense.Vibrate1Action
+            Constants.Lovense.Vibrate2Action
             Constants.Lovense.RotateAction
             Constants.Lovense.PumpAction
             Constants.Lovense.ThrustingAction
@@ -28,6 +30,8 @@ module LovenseActionCodec =
     let actionName fn =
         match fn with
         | Vibrate -> Constants.Lovense.VibrateAction
+        | Vibrate1 -> Constants.Lovense.Vibrate1Action
+        | Vibrate2 -> Constants.Lovense.Vibrate2Action
         | Rotate -> Constants.Lovense.RotateAction
         | Pump -> Constants.Lovense.PumpAction
         | Thrusting -> Constants.Lovense.ThrustingAction
@@ -38,13 +42,6 @@ module LovenseActionCodec =
         | Oscillate -> Constants.Lovense.OscillateAction
         | All -> Constants.Lovense.AllAction
         | Stop -> Constants.Lovense.StopAction
-
-    let private maxValue fn =
-        match fn with
-        | Pump
-        | Depth -> 3
-        | Stroke -> 100
-        | _ -> 20
 
     let actionToString action =
         match action.Function, action.RangeStart with
@@ -73,6 +70,7 @@ module LovenseActionCodec =
         | CapabilityFiltered droppedActions ->
             let joined = String.concat "|" droppedActions
             $"CapabilityFiltered:{joined}"
+        | RuleContribution ruleName -> $"RuleContribution:{ruleName}"
         | StopCommand -> "StopCommand"
 
     let planActionString plan =
@@ -86,6 +84,8 @@ module LovenseActionCodec =
     let functionFromName name =
         match name with
         | value when String.Equals(value, Constants.Lovense.VibrateAction, StringComparison.OrdinalIgnoreCase) -> Some Vibrate
+        | value when String.Equals(value, Constants.Lovense.Vibrate1Action, StringComparison.OrdinalIgnoreCase) -> Some Vibrate1
+        | value when String.Equals(value, Constants.Lovense.Vibrate2Action, StringComparison.OrdinalIgnoreCase) -> Some Vibrate2
         | value when String.Equals(value, Constants.Lovense.RotateAction, StringComparison.OrdinalIgnoreCase) -> Some Rotate
         | value when String.Equals(value, Constants.Lovense.PumpAction, StringComparison.OrdinalIgnoreCase) -> Some Pump
         | value when String.Equals(value, Constants.Lovense.ThrustingAction, StringComparison.OrdinalIgnoreCase) -> Some Thrusting
@@ -108,7 +108,7 @@ module LovenseActionCodec =
                 {
                     Function = Stop
                     Value = 0
-                    MaxValue = 20
+                    MaxValue = LovenseFunctionRanges.maxValue Stop
                     RangeStart = None
                 }
         else
@@ -125,26 +125,26 @@ module LovenseActionCodec =
 
                         match Int32.TryParse(rangeParts[0]), Int32.TryParse(rangeParts[1]) with
                         | (true, startValue), (true, endValue) ->
-                            let maxValue = maxValue fn
+                            let maxValue = LovenseFunctionRanges.maxValue fn
 
                             Some
                                 {
                                     Function = fn
-                                    Value = Shared.clamp 0 maxValue endValue
+                                    Value = LovenseFunctionRanges.clamp fn endValue
                                     MaxValue = maxValue
-                                    RangeStart = Some(Shared.clamp 0 maxValue startValue)
+                                    RangeStart = Some(LovenseFunctionRanges.clamp fn startValue)
                                 }
                         | _ ->
                             None
                     else
                         match Int32.TryParse(parts[1]) with
                         | true, value ->
-                            let maxValue = maxValue fn
+                            let maxValue = LovenseFunctionRanges.maxValue fn
 
                             Some
                                 {
                                     Function = fn
-                                    Value = Shared.clamp 0 maxValue value
+                                    Value = LovenseFunctionRanges.clamp fn value
                                     MaxValue = maxValue
                                     RangeStart = None
                                 }

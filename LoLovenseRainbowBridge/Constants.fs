@@ -17,7 +17,22 @@ module Constants =
         let CommandName = "Function"
 
         [<Literal>]
+        let GetToysCommand = "GetToys"
+
+        [<Literal>]
+        let LocalCommandPath = "/command"
+
+        [<Literal>]
+        let PlatformHeader = "X-platform"
+
+        [<Literal>]
         let VibrateAction = "Vibrate"
+
+        [<Literal>]
+        let Vibrate1Action = "Vibrate1"
+
+        [<Literal>]
+        let Vibrate2Action = "Vibrate2"
 
         [<Literal>]
         let RotateAction = "Rotate"

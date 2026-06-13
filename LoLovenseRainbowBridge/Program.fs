@@ -3,6 +3,7 @@ namespace LoLovenseRainbowBridge
 open System
 open System.Threading
 open System.Globalization
+open Microsoft.Extensions.DependencyInjection
 open LoLovenseRainbowBridge.App
 open LoLovenseRainbowBridge.Bridge.Scoring
 open LoLovenseRainbowBridge.LeagueOfLegends
@@ -34,12 +35,13 @@ module Program =
             lovense =
                 {|
                     developer =
-                        {|
+                        {| 
                             tokenConfigured = config.Lovense.Developer.Token.IsSome
                             userIdConfigured = config.Lovense.Developer.UserId.IsSome
                             userNameConfigured = config.Lovense.Developer.UserName.IsSome
                             userTokenConfigured = config.Lovense.Developer.UserToken.IsSome
                         |}
+                    localApi = config.Lovense.LocalApi
                     toyId = config.Lovense.ToyId |> Option.map (fun _ -> "<configured>")
                     platform = config.Lovense.Platform
                     commandTimeSec = config.Lovense.CommandTimeSec
@@ -141,6 +143,14 @@ module Program =
         | None, false ->
             use leagueClient = new LeagueLiveClient(config.League.BaseUrl, logger)
             use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger)
+            use serviceProvider =
+                ServiceCollection()
+                    .AddSingleton<ILovenseRuleInterpreter, LovenseRuleInterpreter>()
+                    .AddSingleton<ILovenseCommandBuilder>(fun services ->
+                        LovenseCommandBuilder(config.Lovense, services.GetRequiredService<ILovenseRuleInterpreter>()) :> ILovenseCommandBuilder)
+                    .BuildServiceProvider()
+
+            let commandBuilder = serviceProvider.GetRequiredService<ILovenseCommandBuilder>()
 
             printfn "LoL → Lovense intensity generator started."
             printfn "LoL target: %s/liveclientdata/allgamedata" config.League.BaseUrl
@@ -163,6 +173,7 @@ module Program =
                     config.PositionBasedRotation
                     leagueClient
                     lovenseClient
+                    commandBuilder
                     logger
                     recorder
                     (configSummary config)

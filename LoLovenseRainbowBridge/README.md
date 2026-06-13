@@ -24,13 +24,16 @@ Lovense/Contracts.fs              Lovense command contracts
 Lovense/Auth.fs                   Lovense getToken flow
 Lovense/SocketUrl.fs              Lovense getSocketUrl flow
 Lovense/DeviceInfo.fs             toyList and capability parsing
+Lovense/CapabilityResolver.fs     per-toy capability and stereo resolver
+Lovense/RuleEngine.fs             configurable rule interpreter and command builder
+Lovense/LocalApi.fs               Local API GetToys capability enrichment
 Lovense/SocketRuntime.fs          Socket.IO connection and listeners
 Lovense/Client.fs                 thin Lovense Socket API facade
 Recording/Recording.fs            SQLite gameplay recording and replay
 App/Runtime.fs                    orchestration loop
 ScreenCapture/ScreenCapture.fs    Windows screen-region capture
 MinimapDetector/MinimapDetector.fs OpenCV minimap player marker detection
-PositionMapping/PositionMapping.fs minimap position to Lovense rotation mapping
+PositionMapping/PositionMapping.fs minimap position to quadrant/zone context
 Program.fs                        entrypoint
 ```
 
@@ -160,25 +163,139 @@ The bridge can run in two Lovense mapping modes:
     "MaxActionIntensity": 20,
     "PumpMax": 3,
     "DepthMax": 3,
-    "StrokeMax": 100
+    "StrokeMax": 100,
+    "EnableStereoVibration": true,
+    "StereoMode": "Auto",
+    "StereoFallback": "Max",
+    "LogToyViability": true,
+    "FunctionProfiles": [
+      {
+        "FunctionName": "Vibrate",
+        "Enabled": true,
+        "InheritFrom": "",
+        "MinOutput": 0,
+        "MaxOutput": 20,
+        "BaseWeight": 1.0,
+        "TimedWeight": 1.0,
+        "EffectWeight": 1.0,
+        "Curve": "Linear",
+        "Smoothing": 0.0
+      }
+    ],
+    "Rules": [
+      {
+        "Name": "vibrate-base-from-current-game-state",
+        "Kind": "BaseModifier",
+        "TargetFunction": "Vibrate",
+        "Source": "Breakdown.BaseIntensity",
+        "Operation": "Set",
+        "Value": 1.0
+      }
+    ]
   }
 }
 ```
 
 `SimpleVibrate` is the safe compatibility mode. It sends only `Vibrate:n`.
 
-`MultiFunction` builds richer Lovense Function actions from the LoL state:
+`MultiFunction` builds richer Lovense Function actions from the LoL state through
+the configurable rule engine:
 
-- baseline performance drives `Vibrate`
-- the stable base is capped at `Scoring.BaseIntensityCap` (`18` by default)
-- temporary effects can push the final output to `19` or `20`
-- kills, multikills, objectives, teamfights, low HP, laning, and objective timing all produce typed calculator effects
-- unsupported Lovense functions can be filtered from the final command plan when device capabilities are known
+- calculators produce stable inputs such as base intensity, health pressure, heartbeat pulse, temporary effects, and minimap context
+- rules transform those inputs into per-function layers: base, timed, effect, inherited, and final
+- `Vibrate1` and `Vibrate2` inherit the current resolved `Vibrate` value by default, then position rules can reshape the two channels
+- command builder memory tracks incarnation thresholds, max base reached this incarnation, last function state, and diffs
+- unsupported Lovense functions are filtered from the final command plan when capabilities are known
 
 Actual toy behavior depends on the connected toy. If a toy does not support a
 function, Lovense Remote may ignore that function. `EnableStrokeActions` is off
 by default because Lovense documents that `Stroke` should be paired with
 `Thrusting` and needs a meaningful range.
+
+Rule kinds are finite and typed: `BaseModifier`, `ThresholdModifier`,
+`TimedContribution`, `Effect`, `StateTransition`, `CapabilityFallback`,
+`FunctionInheritance`, and `PositionModulation`. This is intentionally not a
+general scripting language; bad function names, rule kinds, operations, and
+output ranges are validated at startup.
+
+Canonical Lovense protocol ranges are code-owned:
+
+```text
+Vibrate, Vibrate1, Vibrate2, Rotate, Thrusting, Fingering,
+Suction, Oscillate, All = 0..20
+Pump, Depth = 0..3
+Stroke = 0..100
+Stop = command-only
+```
+
+Function profiles are behavior policy over those ranges. They can enable a
+function, inherit from another function, apply layer weights, clamp output, and
+choose a simple curve. They do not define protocol ranges.
+
+## Toy capabilities and stereo vibration
+
+Lovense device updates are parsed into per-toy capability profiles. The app logs
+available toys to `track.log` as `lovense.toys.available`, with toy ids redacted,
+connected state, battery, explicit functions from Lovense, inferred functions,
+stereo viability, and notes.
+
+When Socket API device info includes `domain` and `httpsPort`, the bridge can
+also call the Lovense Local API command `GetToys`:
+
+```json
+"Lovense": {
+  "LocalApi": {
+    "EnableGetToys": true,
+    "TimeoutMs": 3000,
+    "AllowSelfSignedCertificate": true,
+    "HeaderPlatform": "LoL Lovense Bridge"
+  }
+}
+```
+
+`GetToys` is used only for capability enrichment. Commands still go through the
+Standard Socket API. The Local API response is normalized whether `data.toys` is
+returned as an object or as a JSON string, and `fullFunctionNames` /
+`shortFunctionNames` become the preferred capability source.
+
+Known behavior:
+
+- Gemini and Edge are treated as dual-vibration candidates and can use
+  `Vibrate1`/`Vibrate2`
+- Ferri is treated as single-channel vibration and falls back to `Vibrate`
+- Nora can use `Vibrate` and `Rotate`
+- unknown toys stay conservative with `Vibrate`, `All`, and `Stop`
+
+Stereo is controlled by:
+
+```json
+"Lovense": {
+  "Mapping": {
+    "EnableStereoVibration": true,
+    "StereoMode": "Auto",
+    "StereoFallback": "Max",
+    "EnableCapabilityFiltering": true,
+    "UnknownCapabilityMode": "SafeUniversal",
+    "ForceSupportedFunctions": []
+  }
+}
+```
+
+`StereoMode=Auto` uses `Vibrate1` and `Vibrate2` only when device info or a known
+toy type makes it viable. `Disabled` collapses stereo actions back to ordinary
+`Vibrate`. `Force` emits dual channels even before device info is available.
+
+When minimap position is available, the runtime passes normalized X/Y, quadrant,
+zone, confidence, and detection method into the rule engine. Position is no
+longer encoded through `Rotate`; `Rotate` remains a real Lovense function only.
+Default `PositionModulation` rules emphasize `Vibrate1` on the left/top-left,
+`Vibrate2` on the right/top-right, keep center balanced, and suppress the
+bottom-left positional accent. If stereo is unavailable, `StereoFallback`
+collapses dual channels by `Max`, `Average`, or `LeftOnly`.
+
+If `Lovense.ToyId` is configured, capability resolution is narrowed to that toy
+when it appears in device info. This prevents one connected toy from making an
+unsupported function look valid for another.
 
 To try the richer mapping safely:
 
@@ -299,13 +416,18 @@ penta kill   = +25 for 5s
 Each multikill event permanently increases base by `+1`.
 Each death subtracts `ceil(sqrt(nthDeath))` from base.
 
-## Position-based rotation
+## Position-based minimap context
 
-The bridge supports minimap position-based rotation for Lovense toys. When enabled, the application captures the League of Legends minimap at a configured screen region, detects a player marker with OpenCV, normalizes the minimap position to `0..1`, and maps that position to a `Rotate` action in the outgoing Lovense plan.
+The bridge supports minimap position-based Lovense modulation. When enabled,
+the application captures the League of Legends minimap at a configured screen
+region, detects a player marker with OpenCV, normalizes the minimap position to
+`0..1`, and passes that position into the Lovense rule engine. Default rules use
+it for stereo `Vibrate1` / `Vibrate2`; `Rotate` is no longer used as a hidden
+position carrier.
 
 ### Configuration
 
-Position-based rotation is enabled in `appsettings.json` by default:
+Position-based minimap context is enabled in `appsettings.json` by default:
 
 ```json
 "PositionBasedRotation": {
@@ -341,16 +463,16 @@ The legacy `POSITION_ROTATION_ENABLE` override is still accepted for the enable 
 
 ### Settings
 
-- **Enable**: Whether position-based rotation is enabled (default: `true`)
+- **Enable**: Whether position-based minimap context is enabled (default: `true`)
 - **CaptureIntervalMs**: How often to capture the minimap in milliseconds (default: `500`)
 - **MinimapScreenX/MinimapScreenY**: Screen coordinates of the minimap's top-left corner (default: `1700, 900` for 1920x1080)
 - **MinimapWidth/MinimapHeight**: Dimensions of the minimap capture region (default: `200x200`)
-- **MappingMode**: Strategy for mapping position to rotation:
-  - `Quadrant`: Maps minimap quadrants to discrete rotation values
-  - `Continuous`: Maps position to continuous rotation based on angle from center
-  - `ZoneBased`: Maps game zones (lanes, jungle) to rotation values
-  - `Combined`: Combines quadrant, continuous, and zone-based approaches (default)
-- **RotationSensitivity**: Multiplier for rotation values (default: `1.0`)
+- **MappingMode**: Strategy for deriving position context:
+  - `Quadrant`: emphasizes minimap quadrants
+  - `Continuous`: uses continuous position
+  - `ZoneBased`: derives broad game zones
+  - `Combined`: combines quadrant, continuous, and zone-based approaches (default)
+- **RotationSensitivity**: Legacy sensitivity value used by the current position mapper while deriving context (default: `1.0`)
 - **TemplateImagePath**: Optional path to a real cropped player-marker template. Leave empty to use HSV/contour detection only.
 - **DebugMode**: Enable debug logging for position detection (default: `false`)
 
@@ -359,8 +481,8 @@ The legacy `POSITION_ROTATION_ENABLE` override is still accepted for the enable 
 1. At the configured interval, the application captures the minimap region from the screen
 2. If `TemplateImagePath` is configured, OpenCV tries template matching with that real image
 3. If no template is configured or matching fails, OpenCV uses HSV color thresholding, morphology, and contour scoring
-4. The detected position (normalized coordinates 0-1) is mapped to a rotation value based on the selected mapping mode
-5. The rotation value is added to the Lovense command plan as a `Rotate` action
+4. The detected position is converted into normalized coordinates, quadrant, zone, confidence, and detection method
+5. The command builder evaluates `PositionModulation` rules, usually changing `Vibrate1` / `Vibrate2`
 6. Detection failures are logged but do not interrupt the main runtime loop
 
 ### Notes
@@ -370,4 +492,4 @@ The legacy `POSITION_ROTATION_ENABLE` override is still accepted for the enable 
 - The detector is tested against `LoLovenseRainbowBridge.Tests/TestAssets/screenshot.jpg`, not a generated minimap
 - Template matching should use a real cropped marker image; the app no longer creates a generated green-dot template
 - HSV/contour detection is intentionally lightweight. It is good enough for a first local bridge, but HUD scale, minimap skin, color settings, and video compression can require tuning
-- Rotation commands are combined with other Lovense actions (vibrate, etc.) in the command plan
+- Position modulation is combined with all other Lovense rule contributions in the command plan

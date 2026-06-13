@@ -10,6 +10,8 @@ module DeviceInfo =
         set
             [
                 Constants.Lovense.VibrateAction
+                Constants.Lovense.Vibrate1Action
+                Constants.Lovense.Vibrate2Action
                 Constants.Lovense.RotateAction
                 Constants.Lovense.PumpAction
                 Constants.Lovense.ThrustingAction
@@ -66,33 +68,28 @@ module DeviceInfo =
 
         find root
 
-    let private toyFromNode (node: JsonNode) =
-        {
-            Id = tryStringByNames [ "id"; "toyId"; "toy" ] node
-            Name = tryStringByNames [ "name" ] node
-            ToyType = tryStringByNames [ "toyType"; "type" ] node
-            Nickname = tryStringByNames [ "nickName"; "nickname" ] node
-            Battery = tryIntByNames [ "battery" ] node
-            Connected = tryBoolByNames [ "connected"; "status" ] node
-        }
-
-    let parseToyList (rawText: string) =
-        try
-            let root = JsonNode.Parse(rawText)
-
-            if isNull root then
-                []
+    let private findValueByName name (root: JsonNode) =
+        let rec find (node: JsonNode) =
+            if isNull node then
+                None
             else
-                match findArrayByName "toyList" root with
-                | None -> []
-                | Some toyList ->
-                    toyList
-                    |> Seq.choose (fun item -> if isNull item then None else Some(toyFromNode item))
-                    |> List.ofSeq
-        with _ ->
-            []
+                match node with
+                | :? JsonObject as object ->
+                    object
+                    |> Seq.tryPick (fun pair ->
+                        if String.Equals(pair.Key, name, StringComparison.OrdinalIgnoreCase) then
+                            if isNull pair.Value then None else Some pair.Value
+                        else
+                            find pair.Value)
+                | :? JsonArray as array ->
+                    array
+                    |> Seq.tryPick (fun item -> if isNull item then None else find item)
+                | _ ->
+                    None
 
-    let tryExtractSupportedFunctions (rawText: string) =
+        find root
+
+    let private collectSupportedFunctionsFromNode (node: JsonNode) =
         let rec collect (node: JsonNode) =
             if isNull node then
                 Set.empty
@@ -120,17 +117,173 @@ module DeviceInfo =
                 | _ ->
                     Set.empty
 
+        collect node
+
+    let private toyFromNode (node: JsonNode) =
+        {
+            Id = tryStringByNames [ "id"; "toyId"; "toy" ] node
+            Name = tryStringByNames [ "name" ] node
+            ToyType = tryStringByNames [ "toyType"; "type" ] node
+            Nickname = tryStringByNames [ "nickName"; "nickname" ] node
+            Battery = tryIntByNames [ "battery" ] node
+            Connected = tryBoolByNames [ "connected"; "status" ] node
+            ExplicitFunctions = collectSupportedFunctionsFromNode node
+        }
+
+    let parseToyList (rawText: string) =
         try
             let root = JsonNode.Parse(rawText)
-            let functions = collect root
+
+            if isNull root then
+                []
+            else
+                match findArrayByName "toyList" root with
+                | None -> []
+                | Some toyList ->
+                    toyList
+                    |> Seq.choose (fun item -> if isNull item then None else Some(toyFromNode item))
+                    |> List.ofSeq
+        with _ ->
+            []
+
+    let parseGetToysToyList (rawText: string) =
+        try
+            let root = JsonNode.Parse(rawText)
+
+            if isNull root then
+                []
+            else
+                match findValueByName "toys" root with
+                | None -> []
+                | Some toysNode ->
+                    let toysNode =
+                        match toysNode with
+                        | :? JsonValue as value ->
+                            try
+                                let text = value.GetValue<string>()
+                                if String.IsNullOrWhiteSpace text then toysNode else JsonNode.Parse(text)
+                            with _ ->
+                                toysNode
+                        | _ ->
+                            toysNode
+
+                    match toysNode with
+                    | :? JsonObject as toysObject ->
+                        toysObject
+                        |> Seq.choose (fun pair -> if isNull pair.Value then None else Some(toyFromNode pair.Value))
+                        |> List.ofSeq
+                    | :? JsonArray as toysArray ->
+                        toysArray
+                        |> Seq.choose (fun item -> if isNull item then None else Some(toyFromNode item))
+                        |> List.ofSeq
+                    | _ ->
+                        []
+        with _ ->
+            []
+
+    let tryExtractSupportedFunctions (rawText: string) =
+        try
+            let root = JsonNode.Parse(rawText)
+            let functions = collectSupportedFunctionsFromNode root
             if functions.IsEmpty then None else Some functions
         with _ ->
             None
 
+    let private textContains (needle: string) (values: string option list) =
+        values
+        |> List.exists (fun value ->
+            value
+            |> Option.exists (fun text -> text.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0))
+
+    let inferToyCapabilityProfile (toy: LovenseDeviceToy) =
+        let identity = [ toy.Name; toy.ToyType; toy.Nickname ]
+
+        let inferred, source, notes =
+            if textContains "Gemini" identity || textContains "Edge" identity then
+                set
+                    [
+                        Constants.Lovense.VibrateAction
+                        Constants.Lovense.Vibrate1Action
+                        Constants.Lovense.Vibrate2Action
+                        Constants.Lovense.AllAction
+                        Constants.Lovense.StopAction
+                    ],
+                Inferred,
+                [ "Dual vibration inferred from known dual-motor toy family." ]
+            elif textContains "Ferri" identity then
+                set [ Constants.Lovense.VibrateAction; Constants.Lovense.AllAction; Constants.Lovense.StopAction ],
+                Inferred,
+                [ "Single vibration inferred from Ferri toy family." ]
+            elif textContains "Nora" identity then
+                set
+                    [
+                        Constants.Lovense.VibrateAction
+                        Constants.Lovense.RotateAction
+                        Constants.Lovense.AllAction
+                        Constants.Lovense.StopAction
+                    ],
+                Inferred,
+                [ "Vibrate and Rotate inferred from Nora toy family." ]
+            else
+                set [ Constants.Lovense.VibrateAction; Constants.Lovense.AllAction; Constants.Lovense.StopAction ],
+                SafeFallback,
+                [ "Unknown toy type; using safe universal functions." ]
+
+        let supported =
+            if toy.ExplicitFunctions.IsEmpty then
+                inferred
+            else
+                Set.union toy.ExplicitFunctions (set [ Constants.Lovense.AllAction; Constants.Lovense.StopAction ])
+
+        let source =
+            if not toy.ExplicitFunctions.IsEmpty then Explicit else source
+
+        {
+            ToyId = toy.Id
+            Name = toy.Name
+            ToyType = toy.ToyType
+            Nickname = toy.Nickname
+            Battery = toy.Battery
+            Connected = toy.Connected
+            ExplicitFunctions = toy.ExplicitFunctions
+            InferredFunctions = inferred
+            SupportedFunctions = supported
+            StereoVibrationSupported =
+                supported.Contains(Constants.Lovense.Vibrate1Action)
+                && supported.Contains(Constants.Lovense.Vibrate2Action)
+            CapabilitySource = source
+            Notes = notes
+        }
+
     let parse (rawText: string) =
         let toyList = parseToyList rawText
+        let root =
+            try JsonNode.Parse(rawText)
+            with _ -> null
 
         {
             ToyList = toyList
             SupportedFunctions = tryExtractSupportedFunctions rawText
+            CapabilityProfiles = toyList |> List.map inferToyCapabilityProfile
+            Domain = if isNull root then None else findValueByName "domain" root |> Option.bind (fun node -> try Some(node.GetValue<string>()) with _ -> None)
+            HttpsPort = if isNull root then None else findValueByName "httpsPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
+            HttpPort = if isNull root then None else findValueByName "httpPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
+            WssPort = if isNull root then None else findValueByName "wssPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
+        }
+
+    let parseGetToys (rawText: string) =
+        let toyList = parseGetToysToyList rawText
+        {
+            ToyList = toyList
+            SupportedFunctions =
+                let functions =
+                    toyList
+                    |> List.collect (fun toy -> toy.ExplicitFunctions |> Set.toList)
+                    |> Set.ofList
+                if functions.IsEmpty then None else Some functions
+            CapabilityProfiles = toyList |> List.map inferToyCapabilityProfile
+            Domain = None
+            HttpsPort = None
+            HttpPort = None
+            WssPort = None
         }

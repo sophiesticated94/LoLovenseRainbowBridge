@@ -2,6 +2,8 @@ namespace LoLovenseRainbowBridge.Lovense
 
 type LovenseActionFunction =
     | Vibrate
+    | Vibrate1
+    | Vibrate2
     | Rotate
     | Pump
     | Thrusting
@@ -36,6 +38,7 @@ type LovenseCommandReason =
     | LaningTexture
     | JungleTensionRamp
     | CapabilityFiltered of droppedActions: string list
+    | RuleContribution of ruleName: string
     | StopCommand
 
 type LovenseCommandPlan =
@@ -94,10 +97,50 @@ type LovenseDeviceToy =
         Nickname: string option
         Battery: int option
         Connected: bool option
+        ExplicitFunctions: Set<string>
+    }
+
+type LovenseCapabilitySource =
+    | Explicit
+    | Inferred
+    | SafeFallback
+    | Forced
+
+type LovenseToyCapabilityProfile =
+    {
+        ToyId: string option
+        Name: string option
+        ToyType: string option
+        Nickname: string option
+        Battery: int option
+        Connected: bool option
+        ExplicitFunctions: Set<string>
+        InferredFunctions: Set<string>
+        SupportedFunctions: Set<string>
+        StereoVibrationSupported: bool
+        CapabilitySource: LovenseCapabilitySource
+        Notes: string list
     }
 
 type LovenseDeviceInfo =
     {
         ToyList: LovenseDeviceToy list
         SupportedFunctions: Set<string> option
+        CapabilityProfiles: LovenseToyCapabilityProfile list
+        Domain: string option
+        HttpsPort: int option
+        HttpPort: int option
+        WssPort: int option
+    }
+
+type LovenseCapabilityResolution =
+    {
+        Plan: LovenseCommandPlan
+        CandidateActions: string list
+        FinalActions: string list
+        DroppedActions: string list
+        StereoApplied: bool
+        StereoFallbackApplied: bool
+        CapabilitySource: string
+        ToyProfiles: LovenseToyCapabilityProfile list
     }
