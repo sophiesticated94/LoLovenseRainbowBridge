@@ -44,6 +44,7 @@ and LovenseLocalApiConfig =
         EnableCommandFallback: bool
         Domain: string option
         HttpsPort: int option
+        HttpPort: int option
         TimeoutMs: int
         AllowSelfSignedCertificate: bool
         HeaderPlatform: string

@@ -52,6 +52,11 @@ module Validation =
                 invalidArg "Lovense.LocalApi.HttpsPort" "Lovense.LocalApi.HttpsPort must be in range 1..65535."
             | _ -> ()
 
+            match config.Lovense.LocalApi.HttpPort with
+            | Some port when port <= 0 || port > 65535 ->
+                invalidArg "Lovense.LocalApi.HttpPort" "Lovense.LocalApi.HttpPort must be in range 1..65535."
+            | _ -> ()
+
         if String.IsNullOrWhiteSpace config.Lovense.LocalApi.HeaderPlatform then
             invalidArg "Lovense.LocalApi.HeaderPlatform" "Lovense.LocalApi.HeaderPlatform cannot be empty."
 

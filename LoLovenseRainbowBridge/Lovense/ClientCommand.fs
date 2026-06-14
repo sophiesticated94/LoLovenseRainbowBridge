@@ -112,7 +112,7 @@ module ClientCommand =
                             CapabilityProfiles = session.CapabilityProfiles
                             Domain = config.LocalApi.Domain
                             HttpsPort = config.LocalApi.HttpsPort
-                            HttpPort = None
+                            HttpPort = config.LocalApi.HttpPort
                             WssPort = None
                         }
 
@@ -327,6 +327,7 @@ module ClientCommand =
                                             socketError = string socketError
                                             localDomain = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.Domain) |> Option.orElse config.LocalApi.Domain
                                             localHttpsPort = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.HttpsPort) |> Option.orElse config.LocalApi.HttpsPort
+                                            localHttpPort = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.HttpPort) |> Option.orElse config.LocalApi.HttpPort
                                             action = actionString
                                         |}
                                     )

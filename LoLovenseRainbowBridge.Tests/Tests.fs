@@ -118,6 +118,7 @@ let lovenseConfig =
                 EnableCommandFallback = true
                 Domain = Some "127.0.0.1"
                 HttpsPort = Some 30010
+                HttpPort = Some 20010
                 TimeoutMs = 3000
                 AllowSelfSignedCertificate = true
                 HeaderPlatform = "LoL Lovense Bridge"
@@ -505,6 +506,8 @@ let ``lovense local get toys parser handles toys object`` () =
     let raw =
         """
         {
+          "type": "OK",
+          "code": 200,
           "data": {
             "toys": {
               "toy-1": {
@@ -532,6 +535,8 @@ let ``lovense local get toys client posts command and parses response`` () =
     let response =
         """
         {
+          "type": "OK",
+          "code": 200,
           "data": {
             "toys": {
               "toy-1": {
@@ -566,6 +571,7 @@ let ``lovense local get toys client posts command and parses response`` () =
             EnableCommandFallback = true
             Domain = Some "127.0.0.1"
             HttpsPort = Some 30010
+            HttpPort = Some 20010
             TimeoutMs = 3000
             AllowSelfSignedCertificate = true
             HeaderPlatform = "LoL Lovense Bridge"
@@ -598,6 +604,65 @@ let ``lovense local get toys client posts command and parses response`` () =
         Assert.True(profile.StereoVibrationSupported)
 
 [<Fact>]
+let ``lovense local get toys falls back from https to http endpoint`` () =
+    let requestedUrls = ResizeArray<string>()
+
+    use handler =
+        { new HttpMessageHandler() with
+            override _.SendAsync(request: HttpRequestMessage, ct: CancellationToken) =
+                task {
+                    requestedUrls.Add(request.RequestUri.ToString())
+
+                    let! _ =
+                        if isNull request.Content then
+                            Task.FromResult("")
+                        else
+                            request.Content.ReadAsStringAsync(ct)
+
+                    if String.Equals(request.RequestUri.Scheme, "https", StringComparison.OrdinalIgnoreCase) then
+                        return
+                            new HttpResponseMessage(
+                                HttpStatusCode.BadGateway,
+                                Content = new StringContent("""{"code":500,"message":"https unavailable"}""")
+                            )
+                    else
+                        return
+                            new HttpResponseMessage(
+                                HttpStatusCode.OK,
+                                Content = new StringContent("""{"code":200,"type":"OK","data":{"toys":"{\"toy-a\":{\"id\":\"toy-a\",\"name\":\"Ferri\",\"status\":1,\"battery\":90,\"fullFunctionNames\":[\"Vibrate\"]}}"}}""")
+                            )
+                } }
+
+    use http = new HttpClient(handler)
+    use logger = new StructuredSessionLogger(loggingConfig (tempPath "local-api-http-fallback-logs"))
+    let localConfig =
+        {
+            EnableGetToys = true
+            EnableCommandFallback = true
+            Domain = Some "192.168.0.110"
+            HttpsPort = Some 30010
+            HttpPort = Some 20010
+            TimeoutMs = 3000
+            AllowSelfSignedCertificate = true
+            HeaderPlatform = "LoL Lovense Bridge"
+            CapabilityRefreshIntervalSec = 60
+        }
+
+    let result =
+        LocalApi.getConfiguredToysAsync http logger localConfig CancellationToken.None
+        |> fun task -> task.GetAwaiter().GetResult()
+
+    match result with
+    | Error error ->
+        failwithf "Expected HTTP fallback GetToys to succeed, got %A" error
+    | Ok parsed ->
+        Assert.Equal(2, requestedUrls.Count)
+        Assert.Equal("https://192.168.0.110:30010/command", requestedUrls[0])
+        Assert.Equal("http://192.168.0.110:20010/command", requestedUrls[1])
+        let profile = Assert.Single(parsed.CapabilityProfiles)
+        Assert.Contains(Constants.Lovense.VibrateAction, profile.SupportedFunctions)
+
+[<Fact>]
 let ``lovense local command fallback posts final function request`` () =
     let mutable capturedUrl = ""
     let mutable capturedPlatform = ""
@@ -625,6 +690,7 @@ let ``lovense local command fallback posts final function request`` () =
             EnableCommandFallback = true
             Domain = Some "127.0.0.1"
             HttpsPort = Some 30010
+            HttpPort = Some 20010
             TimeoutMs = 3000
             AllowSelfSignedCertificate = true
             HeaderPlatform = "LoL Lovense Bridge"
@@ -1752,8 +1818,9 @@ let ``default configuration enables position rotation`` () =
     Assert.Equal(100, config.Recording.SliceMs)
     Assert.True(config.Lovense.LocalApi.EnableGetToys)
     Assert.True(config.Lovense.LocalApi.EnableCommandFallback)
-    Assert.Equal(Some "127.0.0.1", config.Lovense.LocalApi.Domain)
+    Assert.True(config.Lovense.LocalApi.Domain.IsSome)
     Assert.Equal(Some 30010, config.Lovense.LocalApi.HttpsPort)
+    Assert.Equal(Some 20010, config.Lovense.LocalApi.HttpPort)
     Assert.Equal(60, config.Lovense.LocalApi.CapabilityRefreshIntervalSec)
     Assert.Equal("Auto", config.Lovense.TransportMode)
     Assert.True(config.Lovense.StandardApi.Enable)

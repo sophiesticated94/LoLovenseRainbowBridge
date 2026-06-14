@@ -74,17 +74,22 @@ Standard Socket API workflow:
 
 Standard API workflow:
 
-1. Configure the Lovense Developer Dashboard callback URL to match
-   `Lovense.StandardApi.PublicCallbackUrl` or a tunnel that forwards to
-   `Lovense.StandardApi.CallbackListenUrl`.
+1. Configure the Lovense Developer Dashboard callback URL to a URL Lovense
+   Remote can reach. Do not use `localhost` in the dashboard unless Remote is
+   running on the same machine. For a phone on the same Wi-Fi, use the PC LAN
+   address, for example `http://192.168.0.223:17878/lovense/callback/`, while
+   the app listens on `Lovense.StandardApi.CallbackListenUrl`, usually
+   `http://0.0.0.0:17878/lovense/callback/`.
 2. The bridge calls `api/lan/getQrCode` with the local developer token and prints
    the pairing QR/code.
 3. After pairing, Lovense Remote posts `domain`, ports, and toy info to the local
    callback listener.
 4. The bridge refreshes `GetToys` at most once per
    `Lovense.LocalApi.CapabilityRefreshIntervalSec` seconds.
-5. Commands can be emitted through `https://{domain}:{httpsPort}/command`; if
-   enabled, Standard API server command fallback can use `api/lan/v2/command`.
+5. Commands can be emitted through `https://{domain}:{httpsPort}/command`; when
+   `Lovense.LocalApi.HttpPort` is configured the bridge can fall back to
+   `http://{domain}:{httpPort}/command`. If enabled, Standard API server command
+   fallback can use `api/lan/v2/command`.
 
 Do not configure `Lovense.AuthToken`; it is intentionally not a public app
 setting. Put real developer values only in ignored `appsettings.Local.json`.
@@ -262,12 +267,16 @@ connected state, battery, explicit functions from Lovense, inferred functions,
 stereo viability, and notes.
 
 When Socket API device info or Standard API callback data includes `domain` and
-`httpsPort`, the bridge can also call the Lovense Local API command `GetToys`:
+`httpsPort`, or when local LAN values are configured, the bridge can call the
+Lovense Local API command `GetToys`:
 
 ```json
 "Lovense": {
   "LocalApi": {
     "EnableGetToys": true,
+    "Domain": "192.168.0.110",
+    "HttpsPort": 30010,
+    "HttpPort": 20010,
     "CapabilityRefreshIntervalSec": 60,
     "TimeoutMs": 3000,
     "AllowSelfSignedCertificate": true,

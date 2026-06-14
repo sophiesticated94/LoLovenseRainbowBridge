@@ -132,6 +132,7 @@ module Loader =
                             EnableCommandFallback = boolValue root "Lovense:LocalApi:EnableCommandFallback"
                             Domain = optionalString root "Lovense:LocalApi:Domain"
                             HttpsPort = optionalString root "Lovense:LocalApi:HttpsPort" |> Option.bind (fun raw -> match Int32.TryParse raw with | true, value -> Some value | _ -> None)
+                            HttpPort = optionalString root "Lovense:LocalApi:HttpPort" |> Option.bind (fun raw -> match Int32.TryParse raw with | true, value -> Some value | _ -> None)
                             TimeoutMs = intValue root "Lovense:LocalApi:TimeoutMs"
                             AllowSelfSignedCertificate = boolValue root "Lovense:LocalApi:AllowSelfSignedCertificate"
                             HeaderPlatform = requiredValue root "Lovense:LocalApi:HeaderPlatform"
