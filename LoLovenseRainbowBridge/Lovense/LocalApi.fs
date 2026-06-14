@@ -1,6 +1,7 @@
 namespace LoLovenseRainbowBridge.Lovense
 
 open System
+open System.Net
 open System.Net.Http
 open System.Text.Json.Nodes
 open System.Threading
@@ -24,6 +25,19 @@ module LocalApi =
     let private commandUrl scheme domain port =
         $"{scheme}://{domain}:{port}{Constants.Lovense.LocalCommandPath}"
 
+    let private httpsDomain (domain: string) =
+        match IPAddress.TryParse domain with
+        | true, address when address.AddressFamily = Sockets.AddressFamily.InterNetwork ->
+            domain.Replace(".", "-") + ".lovense.club"
+        | _ ->
+            domain
+
+    let private httpDomain (domain: string) =
+        if domain.EndsWith(".lovense.club", StringComparison.OrdinalIgnoreCase) then
+            domain.Substring(0, domain.Length - ".lovense.club".Length).Replace("-", ".")
+        else
+            domain
+
     let private commandEndpoints (config: LovenseLocalApiConfig) (deviceInfo: LovenseDeviceInfo option) =
         let domain = deviceInfo |> Option.bind (fun info -> info.Domain) |> Option.orElse config.Domain
 
@@ -32,11 +46,11 @@ module LocalApi =
         | Some domain ->
             [
                 match deviceInfo |> Option.bind (fun info -> info.HttpsPort) |> Option.orElse config.HttpsPort with
-                | Some port -> "https", domain, port
+                | Some port -> "https", httpsDomain domain, port
                 | None -> ()
 
                 match deviceInfo |> Option.bind (fun info -> info.HttpPort) |> Option.orElse config.HttpPort with
-                | Some port -> "http", domain, port
+                | Some port -> "http", httpDomain domain, port
                 | None -> ()
             ]
 
@@ -104,15 +118,22 @@ module LocalApi =
                         timeoutCts.CancelAfter(config.TimeoutMs)
 
                         let! endpointResponse =
-                            Transport.postJsonWithHeadersAsync
-                                http
-                                logger
-                                correlationId
-                                url
-                                [ Constants.Lovense.PlatformHeader, config.HeaderPlatform ]
-                                getToysBody
-                                getToysBody
-                                timeoutCts.Token
+                            task {
+                                try
+                                    return!
+                                        Transport.postJsonWithHeadersAsync
+                                            http
+                                            logger
+                                            correlationId
+                                            url
+                                            [ Constants.Lovense.PlatformHeader, config.HeaderPlatform ]
+                                            getToysBody
+                                            getToysBody
+                                            timeoutCts.Token
+                                with
+                                | :? OperationCanceledException when not ct.IsCancellationRequested ->
+                                    return Error(SocketUrlRequestFailed(url, $"Lovense Local API GetToys timed out after {config.TimeoutMs}ms."))
+                            }
 
                         match endpointResponse with
                         | Ok endpointResponse ->
@@ -217,15 +238,22 @@ module LocalApi =
                         timeoutCts.CancelAfter(config.TimeoutMs)
 
                         let! endpointResponse =
-                            Transport.postJsonWithHeadersAsync
-                                http
-                                logger
-                                correlationId
-                                url
-                                [ Constants.Lovense.PlatformHeader, config.HeaderPlatform ]
-                                payload
-                                payload
-                                timeoutCts.Token
+                            task {
+                                try
+                                    return!
+                                        Transport.postJsonWithHeadersAsync
+                                            http
+                                            logger
+                                            correlationId
+                                            url
+                                            [ Constants.Lovense.PlatformHeader, config.HeaderPlatform ]
+                                            payload
+                                            payload
+                                            timeoutCts.Token
+                                with
+                                | :? OperationCanceledException when not ct.IsCancellationRequested ->
+                                    return Error(SocketUrlRequestFailed(url, $"Lovense Local API command timed out after {config.TimeoutMs}ms."))
+                            }
 
                         match endpointResponse with
                         | Ok endpointResponse ->

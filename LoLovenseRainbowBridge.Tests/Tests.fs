@@ -121,7 +121,7 @@ let lovenseConfig =
                 HttpPort = Some 20010
                 TimeoutMs = 3000
                 AllowSelfSignedCertificate = true
-                HeaderPlatform = "LoL Lovense Bridge"
+                HeaderPlatform = "GameRender"
                 CapabilityRefreshIntervalSec = 60
             }
         CommandTimeSec = 2.0
@@ -574,7 +574,7 @@ let ``lovense local get toys client posts command and parses response`` () =
             HttpPort = Some 20010
             TimeoutMs = 3000
             AllowSelfSignedCertificate = true
-            HeaderPlatform = "LoL Lovense Bridge"
+            HeaderPlatform = "GameRender"
             CapabilityRefreshIntervalSec = 60
         }
 
@@ -599,7 +599,7 @@ let ``lovense local get toys client posts command and parses response`` () =
     | Ok parsed ->
         let profile = Assert.Single(parsed.CapabilityProfiles)
         Assert.Equal("https://127-0-0-1.lovense.club:34567/command", capturedUrl)
-        Assert.Equal("LoL Lovense Bridge", capturedPlatform)
+        Assert.Equal("GameRender", capturedPlatform)
         Assert.Equal("""{"command":"GetToys"}""", capturedBody)
         Assert.True(profile.StereoVibrationSupported)
 
@@ -644,7 +644,7 @@ let ``lovense local get toys falls back from https to http endpoint`` () =
             HttpPort = Some 20010
             TimeoutMs = 3000
             AllowSelfSignedCertificate = true
-            HeaderPlatform = "LoL Lovense Bridge"
+            HeaderPlatform = "GameRender"
             CapabilityRefreshIntervalSec = 60
         }
 
@@ -657,10 +657,58 @@ let ``lovense local get toys falls back from https to http endpoint`` () =
         failwithf "Expected HTTP fallback GetToys to succeed, got %A" error
     | Ok parsed ->
         Assert.Equal(2, requestedUrls.Count)
-        Assert.Equal("https://192.168.0.110:30010/command", requestedUrls[0])
+        Assert.Equal("https://192-168-0-110.lovense.club:30010/command", requestedUrls[0])
         Assert.Equal("http://192.168.0.110:20010/command", requestedUrls[1])
         let profile = Assert.Single(parsed.CapabilityProfiles)
         Assert.Contains(Constants.Lovense.VibrateAction, profile.SupportedFunctions)
+
+[<Fact>]
+let ``lovense local get toys treats endpoint timeout as fallback error`` () =
+    let requestedUrls = ResizeArray<string>()
+
+    use handler =
+        { new HttpMessageHandler() with
+            override _.SendAsync(request: HttpRequestMessage, ct: CancellationToken) =
+                task {
+                    requestedUrls.Add(request.RequestUri.ToString())
+
+                    if String.Equals(request.RequestUri.Scheme, "https", StringComparison.OrdinalIgnoreCase) then
+                        return raise (OperationCanceledException())
+                    else
+                        return
+                            new HttpResponseMessage(
+                                HttpStatusCode.OK,
+                                Content = new StringContent("""{"code":200,"type":"OK","data":{"toys":"{\"toy-a\":{\"id\":\"toy-a\",\"name\":\"Ferri\",\"fullFunctionNames\":[\"Vibrate\"]}}"}}""")
+                            )
+                } }
+
+    use http = new HttpClient(handler)
+    use logger = new StructuredSessionLogger(loggingConfig (tempPath "local-api-timeout-fallback-logs"))
+    let localConfig =
+        {
+            EnableGetToys = true
+            EnableCommandFallback = true
+            Domain = Some "192.168.0.110"
+            HttpsPort = Some 30010
+            HttpPort = Some 20010
+            TimeoutMs = 3000
+            AllowSelfSignedCertificate = true
+            HeaderPlatform = "GameRender"
+            CapabilityRefreshIntervalSec = 60
+        }
+
+    let result =
+        LocalApi.getConfiguredToysAsync http logger localConfig CancellationToken.None
+        |> fun task -> task.GetAwaiter().GetResult()
+
+    match result with
+    | Error error ->
+        failwithf "Expected HTTP fallback after timeout to succeed, got %A" error
+    | Ok parsed ->
+        Assert.Equal(2, requestedUrls.Count)
+        Assert.Equal("https://192-168-0-110.lovense.club:30010/command", requestedUrls[0])
+        Assert.Equal("http://192.168.0.110:20010/command", requestedUrls[1])
+        Assert.Single(parsed.CapabilityProfiles) |> ignore
 
 [<Fact>]
 let ``lovense local command fallback posts final function request`` () =
@@ -693,7 +741,7 @@ let ``lovense local command fallback posts final function request`` () =
             HttpPort = Some 20010
             TimeoutMs = 3000
             AllowSelfSignedCertificate = true
-            HeaderPlatform = "LoL Lovense Bridge"
+            HeaderPlatform = "GameRender"
             CapabilityRefreshIntervalSec = 60
         }
 
@@ -707,8 +755,8 @@ let ``lovense local command fallback posts final function request`` () =
         failwithf "Local command failed: %A" error
     | Ok response ->
         Assert.Equal(200, response.StatusCode)
-        Assert.Equal("https://127.0.0.1:30010/command", capturedUrl)
-        Assert.Equal("LoL Lovense Bridge", capturedPlatform)
+        Assert.Equal("https://127-0-0-1.lovense.club:30010/command", capturedUrl)
+        Assert.Equal("GameRender", capturedPlatform)
         Assert.Contains("\"command\":\"Function\"", capturedBody)
         Assert.Contains("\"action\":\"Vibrate:16\"", capturedBody)
         Assert.Contains("\"timeSec\":2", capturedBody)
