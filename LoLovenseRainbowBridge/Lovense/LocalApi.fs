@@ -2,19 +2,12 @@ namespace LoLovenseRainbowBridge.Lovense
 
 open System
 open System.Net.Http
-open System.Globalization
 open System.Threading
 open LoLovenseRainbowBridge
 
 module LocalApi =
 
     let private getToysBody = $"""{{"command":"{Constants.Lovense.GetToysCommand}"}}"""
-
-    let private escapeJsonString (value: string) =
-        value.Replace("\\", "\\\\").Replace("\"", "\\\"")
-
-    let private invariantFloat (value: float) =
-        value.ToString(CultureInfo.InvariantCulture)
 
     let private configuredDeviceInfo (config: LovenseLocalApiConfig) =
         {
@@ -33,12 +26,12 @@ module LocalApi =
     let private commandPayload (plan: LovenseCommandPlan) actionString =
         let toyPart =
             plan.ToyId
-            |> Option.map (fun toyId -> $",\"toy\":\"{escapeJsonString toyId}\"")
+            |> Option.map (fun toyId -> $",\"toy\":\"{LovenseFormatting.escapeJsonString toyId}\"")
             |> Option.defaultValue ""
 
         let stopPrevious = if plan.StopPrevious then 1 else 0
 
-        $"""{{"command":"{Constants.Lovense.CommandName}","action":"{escapeJsonString actionString}","timeSec":{invariantFloat plan.TimeSec},"stopPrevious":{stopPrevious},"apiVer":{Constants.Lovense.ApiVersion}{toyPart}}}"""
+        $"""{{"command":"{Constants.Lovense.CommandName}","action":"{LovenseFormatting.escapeJsonString actionString}","timeSec":{LovenseFormatting.invariantFloat plan.TimeSec},"stopPrevious":{stopPrevious},"apiVer":{Constants.Lovense.ApiVersion}{toyPart}}}"""
 
     let getToysAsync
         (http: HttpClient)

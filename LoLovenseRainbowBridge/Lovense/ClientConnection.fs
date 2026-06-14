@@ -7,14 +7,6 @@ open LoLovenseRainbowBridge
 open SocketIOClient
 
 module ClientConnection =
-    let private applyDeviceInfo (deviceInfo: LovenseDeviceInfo) (session: LovenseSessionState) =
-        {
-            session with
-                LatestDeviceInfo = Some deviceInfo
-                CapabilityProfiles = deviceInfo.CapabilityProfiles
-                SupportedFunctions = deviceInfo.SupportedFunctions |> Option.orElse session.SupportedFunctions
-        }
-
     let private resolveAuthTokenAsync (http: System.Net.Http.HttpClient) (logger: StructuredSessionLogger) (config: LovenseConfig) (session: LovenseSessionState) forceRefresh (ct: CancellationToken) =
         task {
             match session.GeneratedAuthToken, forceRefresh with
@@ -89,26 +81,20 @@ module ClientConnection =
                     return (Ok info, updatedSession)
         }
 
-    let ensureStandardApiReadyAsync (http: System.Net.Http.HttpClient) (logger: StructuredSessionLogger) (config: LovenseConfig) (session: LovenseSessionState) (standardCallbackServer: StandardApiCallbackServer option) (ct: CancellationToken) =
+    let ensureStandardApiReadyAsync (http: System.Net.Http.HttpClient) (logger: StructuredSessionLogger) (config: LovenseConfig) (session: LovenseSessionState) (standardCallbackServer: StandardApiCallbackServer option) (onDeviceInfo: LovenseDeviceInfo -> unit) (ct: CancellationToken) =
         task {
             if config.StandardApi.Enable then
-                let (newCallbackServer, updatedSession) =
+                let newCallbackServer =
                     match standardCallbackServer with
-                    | Some server -> (Some server, session)
-                    | None ->
-                        let mutable mutableSession = session
-                        let onStandardDeviceInfo deviceInfo =
-                            mutableSession <- applyDeviceInfo deviceInfo mutableSession
+                    | Some server -> Some server
+                    | None -> StandardApi.startCallbackListener logger config.StandardApi config.Developer onDeviceInfo
 
-                        let server = StandardApi.startCallbackListener logger config.StandardApi config.Developer onStandardDeviceInfo
-                        (server, mutableSession)
-
-                if config.StandardApi.GenerateQrOnStartup && updatedSession.StandardQrCode.IsNone then
+                if config.StandardApi.GenerateQrOnStartup && session.StandardQrCode.IsNone then
                     let! qrResult = StandardApi.requestQrCodeAsync http logger config.StandardApi config.Developer ct
 
                     match qrResult with
                     | Ok qrInfo ->
-                        let finalSession = { updatedSession with StandardQrCode = Some { Value = qrInfo; AcquiredAt = DateTimeOffset.UtcNow } }
+                        let finalSession = { session with StandardQrCode = Some { Value = qrInfo; AcquiredAt = DateTimeOffset.UtcNow } }
                         printfn "Lovense Standard API pairing code: %s" qrInfo.Code
                         printfn "Lovense Standard API QR: %s" qrInfo.Qr
                         return (finalSession, newCallbackServer)
@@ -118,9 +104,9 @@ module ClientConnection =
                             "Lovense Standard API QR/code preparation failed.",
                             {| error = string error |}
                         )
-                        return (updatedSession, newCallbackServer)
+                        return (session, newCallbackServer)
                 else
-                    return (updatedSession, newCallbackServer)
+                    return (session, newCallbackServer)
             else
                 return (session, standardCallbackServer)
         }

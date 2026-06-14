@@ -8,14 +8,11 @@ open LoLovenseRainbowBridge
 
 module SocketUrl =
 
-    let private escapeJsonString (value: string) =
-        value.Replace("\\", "\\\\").Replace("\"", "\\\"")
-
     let buildSocketUrlRequestBody platform authToken =
-        $"""{{"{Constants.Lovense.PlatformField}":"{escapeJsonString platform}","{Constants.Lovense.AuthTokenField}":"{escapeJsonString authToken}"}}"""
+        $"""{{"{Constants.Lovense.PlatformField}":"{LovenseFormatting.escapeJsonString platform}","{Constants.Lovense.AuthTokenField}":"{LovenseFormatting.escapeJsonString authToken}"}}"""
 
     let buildRedactedSocketUrlRequestBody platform =
-        $"""{{"{Constants.Lovense.PlatformField}":"{escapeJsonString platform}","{Constants.Lovense.AuthTokenField}":"{Constants.Lovense.AuthTokenRedacted}"}}"""
+        $"""{{"{Constants.Lovense.PlatformField}":"{LovenseFormatting.escapeJsonString platform}","{Constants.Lovense.AuthTokenField}":"{Constants.Lovense.AuthTokenRedacted}"}}"""
 
     let parseSocketUrlResponse (body: string) =
         try

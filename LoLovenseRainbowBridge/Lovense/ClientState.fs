@@ -1,7 +1,6 @@
 namespace LoLovenseRainbowBridge.Lovense
 
 open System
-open System.Globalization
 open SocketIOClient
 open LoLovenseRainbowBridge
 
@@ -29,12 +28,6 @@ type SessionRetryPolicy =
     | RetryAuthAndSocketUrl
 
 module ClientState =
-    let invariantFloat (value: float) =
-        value.ToString(CultureInfo.InvariantCulture)
-
-    let escapeJsonString (value: string) =
-        value.Replace("\\", "\\\\").Replace("\"", "\\\"")
-
     let applyDeviceInfo (deviceInfo: LovenseDeviceInfo) (session: LovenseSessionState) =
         {
             session with

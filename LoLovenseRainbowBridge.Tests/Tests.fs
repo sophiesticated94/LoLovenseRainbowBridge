@@ -10,6 +10,7 @@ open System.Text.Json.Nodes
 open System.Threading
 open System.Threading.Tasks
 open LoLovenseRainbowBridge
+open LoLovenseRainbowBridge.App
 open LoLovenseRainbowBridge.Bridge
 open LoLovenseRainbowBridge.Bridge.Scoring
 open LoLovenseRainbowBridge.LeagueOfLegends
@@ -647,6 +648,74 @@ let ``lovense local command fallback posts final function request`` () =
         Assert.Contains("\"timeSec\":2", capturedBody)
 
 [<Fact>]
+let ``lovense auto command falls back instead of cold not connected`` () =
+    let mutable capturedLocalBody = ""
+
+    use apiHandler =
+        new StubHttpMessageHandler(
+            HttpStatusCode.OK,
+            """{"code":0,"message":"Success","data":{}}""",
+            fun _ _ -> ()
+        )
+
+    use localHandler =
+        new StubHttpMessageHandler(
+            HttpStatusCode.OK,
+            """{"code":200,"type":"OK","data":{}}""",
+            fun _ body -> capturedLocalBody <- body
+        )
+
+    use http = new HttpClient(apiHandler)
+    use localHttp = new HttpClient(localHandler)
+    use logger = new StructuredSessionLogger(loggingConfig (tempPath "auto-fallback-logs"))
+    use connectGate = new SemaphoreSlim(1, 1)
+
+    let config =
+        {
+            lovenseConfig with
+                DryRun = false
+                TransportMode = "Auto"
+                StandardApi = { lovenseConfig.StandardApi with Enable = false; UseServerCommandFallback = false }
+                LocalApi = { lovenseConfig.LocalApi with EnableGetToys = false; EnableCommandFallback = true }
+                Developer = { Token = None; UserId = None; UserName = None; UserToken = None }
+        }
+
+    let result, _, _, _ =
+        ClientCommand.sendCommandPlanAsync
+            http
+            localHttp
+            logger
+            config
+            scoringConfig
+            {
+                Socket = None
+                SocketInfo = None
+                StandardQrCode = None
+                QrCodeLogged = false
+                SupportedFunctions = None
+                CapabilityProfiles = []
+                GeneratedAuthToken = None
+                LatestDeviceInfo = None
+            }
+            None
+            DateTimeOffset.MinValue
+            connectGate
+            ignore
+            ignore
+            (Mapping.simpleVibratePlan config 8)
+            8
+            []
+            CancellationToken.None
+        |> fun task -> task.GetAwaiter().GetResult()
+
+    match result with
+    | Ok response ->
+        Assert.False(response.SocketConnected)
+        Assert.Contains("\"action\":\"Vibrate:8\"", capturedLocalBody)
+    | Error error ->
+        failwithf "Expected Auto local fallback to succeed, got %A" error
+
+[<Fact>]
 let ``lovense standard qr request contains developer fields and redacts token`` () =
     let developer =
         {
@@ -697,6 +766,46 @@ let ``lovense standard callback parser extracts local endpoint and toys`` () =
         Assert.True(profile.StereoVibrationSupported)
         Assert.Contains(Constants.Lovense.Vibrate1Action, profile.SupportedFunctions)
         Assert.Contains(Constants.Lovense.Vibrate2Action, profile.SupportedFunctions)
+
+[<Fact>]
+let ``lovense standard callback listener forwards device info to owner callback`` () =
+    let listener = new System.Net.Sockets.TcpListener(Net.IPAddress.Loopback, 0)
+    listener.Start()
+    let port = (listener.LocalEndpoint :?> Net.IPEndPoint).Port
+    listener.Stop()
+
+    let mutable received: LovenseDeviceInfo option = None
+    use logger = new StructuredSessionLogger(loggingConfig (tempPath "standard-callback-listener-logs"))
+    let callbackUrl = $"http://localhost:{port}/lovense/callback/"
+    let server =
+        StandardApi.startCallbackListener
+            logger
+            { lovenseConfig.StandardApi with Enable = true; CallbackListenUrl = callbackUrl; GenerateQrOnStartup = false }
+            { Token = Some "dev-token"; UserId = Some "uid-1"; UserName = None; UserToken = Some "u-token" }
+            (fun deviceInfo -> received <- Some deviceInfo)
+
+    match server with
+    | None -> failwith "Callback listener did not start."
+    | Some server ->
+        try
+            use http = new HttpClient()
+            let body =
+                """{"uid":"uid-1","utoken":"u-token","domain":"127-0-0-1.lovense.club","httpsPort":30010,"toys":{"toy-a":{"id":"toy-a","name":"Gemini","fullFunctionNames":["Vibrate1","Vibrate2"]}}}"""
+            let response =
+                http.PostAsync(callbackUrl, new StringContent(body, Text.Encoding.UTF8, Constants.Lovense.JsonMediaType))
+                |> fun task -> task.GetAwaiter().GetResult()
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode)
+
+            let deadline = DateTimeOffset.UtcNow.AddSeconds(3.0)
+            while received.IsNone && DateTimeOffset.UtcNow < deadline do
+                Thread.Sleep(25)
+
+            Assert.True(received.IsSome, "Callback listener did not forward device info.")
+            Assert.Equal(Some "127-0-0-1.lovense.club", received.Value.Domain)
+            Assert.True((Assert.Single(received.Value.CapabilityProfiles)).StereoVibrationSupported)
+        finally
+            server.Stop()
 
 [<Fact>]
 let ``lovense standard callback rejects unexpected uid`` () =
@@ -1711,6 +1820,19 @@ let ``rule input builder exposes runtime availability variables`` () =
     Assert.Equal(3.0, variables["LolFailureAttemptsSinceSuccess"])
 
 [<Fact>]
+let ``ocr disabled cache state does not increment detection failures`` () =
+    let cache = RuntimeState.RuntimeStateCache()
+
+    cache.UpdateOcrDisabled()
+    cache.UpdateOcrDisabled()
+
+    let state = cache.Read().Ocr
+
+    Assert.False(state.DataAcquired)
+    Assert.Equal(0, state.DetectionFailures)
+    Assert.Equal(Some "Position-based rotation is disabled.", state.LastError)
+
+[<Fact>]
 let ``lovense command builder creates changed plan only for function diffs`` () =
     let config =
         {
@@ -1836,6 +1958,59 @@ let ``replay can reconstruct command plan from recorded action`` () =
     Assert.Equal(3, plan.Actions.Length)
 
 [<Fact>]
+let ``duplicate private helper guard detects repeated helper names in sample`` () =
+    let duplicatePrivateNames (sources: (string * string) list) =
+        let regex = Text.RegularExpressions.Regex(@"let\s+private\s+([A-Za-z_][A-Za-z0-9_]*)\b")
+
+        sources
+        |> List.collect (fun (path, text) ->
+            regex.Matches(text)
+            |> Seq.cast<Text.RegularExpressions.Match>
+            |> Seq.map (fun m -> m.Groups[1].Value, path)
+            |> Seq.toList)
+        |> List.groupBy fst
+        |> List.choose (fun (name, matches) ->
+            let paths = matches |> List.map snd |> List.distinct
+            if paths.Length > 1 then Some(name, paths) else None)
+
+    let duplicates =
+        duplicatePrivateNames
+            [
+                "A.fs", "module A\nlet private sameName value = value\n"
+                "B.fs", "module B\nlet private sameName value = value + 1\n"
+            ]
+
+    Assert.Contains(duplicates, fun (name, _) -> name = "sameName")
+
+[<Fact>]
+let ``source files do not duplicate important private helper names`` () =
+    let sourceRoot = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "..", "LoLovenseRainbowBridge"))
+    let regex = Text.RegularExpressions.Regex(@"let\s+private\s+([A-Za-z_][A-Za-z0-9_]*)\b")
+    let allowedDuplicates = set [ "action" ]
+
+    let duplicates =
+        Directory.GetFiles(sourceRoot, "*.fs", SearchOption.AllDirectories)
+        |> Array.toList
+        |> List.collect (fun path ->
+            let text = File.ReadAllText(path)
+
+            regex.Matches(text)
+            |> Seq.cast<Text.RegularExpressions.Match>
+            |> Seq.map (fun m -> m.Groups[1].Value, Path.GetRelativePath(sourceRoot, path))
+            |> Seq.toList)
+        |> List.groupBy fst
+        |> List.choose (fun (name, matches) ->
+            let paths = matches |> List.map snd |> List.distinct |> List.sort
+
+            if paths.Length > 1 && not (allowedDuplicates.Contains name) then
+                Some(sprintf "%s: %s" name (String.Join(", ", paths)))
+            else
+                None)
+
+    let duplicateMessage = String.Join("; ", duplicates)
+    Assert.True(duplicates.IsEmpty, $"Duplicate private helpers found: {duplicateMessage}")
+
+[<Fact>]
 let ``minimap detection uses real screenshot fixture template`` () =
     use screenshot = new Bitmap(testAssetPath "screenshot.jpg")
     use minimap = screenshot.Clone(Rectangle(992, 552, 208, 196), PixelFormat.Format24bppRgb)
@@ -1880,4 +2055,3 @@ let ``minimap detection works without generated default template`` () =
     Assert.InRange(position.NormalizedX, 0.0, 1.0)
     Assert.InRange(position.NormalizedY, 0.0, 1.0)
     Assert.True(position.Confidence > 0.1, sprintf "Color detector confidence too low: %f" position.Confidence)
-

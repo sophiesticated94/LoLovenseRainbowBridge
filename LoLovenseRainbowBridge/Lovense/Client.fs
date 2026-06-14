@@ -50,7 +50,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
 
     member _.PrepareStandardApiAsync(ct: CancellationToken) =
         task {
-            let! (updatedSession, newCallbackServer) = ClientConnection.ensureStandardApiReadyAsync http logger config session standardCallbackServer ct
+            let! (updatedSession, newCallbackServer) = ClientConnection.ensureStandardApiReadyAsync http logger config session standardCallbackServer handleDeviceInfo ct
             session <- updatedSession
             standardCallbackServer <- newCallbackServer
         }
@@ -65,7 +65,23 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
 
     member this.SendCommandPlanAsync(plan: LovenseCommandPlan, requestedValue: int, ruleTraces: LovenseRuleEvaluationTrace list, ct: CancellationToken) =
         task {
-            let! (commandResult, updatedSession, newCallbackServer, newNextRefresh) = ClientCommand.sendCommandPlanAsync http localHttp logger config scoringConfig session standardCallbackServer nextLocalCapabilityRefreshAt plan requestedValue ruleTraces ct
+            let! (commandResult, updatedSession, newCallbackServer, newNextRefresh) =
+                ClientCommand.sendCommandPlanAsync
+                    http
+                    localHttp
+                    logger
+                    config
+                    scoringConfig
+                    session
+                    standardCallbackServer
+                    nextLocalCapabilityRefreshAt
+                    connectGate
+                    handleDeviceInfo
+                    handleQrCode
+                    plan
+                    requestedValue
+                    ruleTraces
+                    ct
             session <- updatedSession
             standardCallbackServer <- newCallbackServer
             nextLocalCapabilityRefreshAt <- newNextRefresh

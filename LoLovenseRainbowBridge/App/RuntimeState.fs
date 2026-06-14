@@ -178,6 +178,22 @@ module RuntimeState =
                                 }
                     })
 
+        member _.UpdateOcrDisabled() =
+            lock gate (fun () ->
+                let now = DateTimeOffset.UtcNow
+                snapshot <-
+                    {
+                        snapshot with
+                            Ocr =
+                                {
+                                    snapshot.Ocr with
+                                        DataAcquired = false
+                                        UnavailableSince = snapshot.Ocr.UnavailableSince |> Option.orElse (Some now)
+                                        LastError = Some "Position-based rotation is disabled."
+                                        Version = snapshot.Ocr.Version + 1L
+                                }
+                    })
+
         member _.UpdateLovenseSuccess connected =
             lock gate (fun () ->
                 let now = DateTimeOffset.UtcNow

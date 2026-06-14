@@ -46,6 +46,7 @@
     <Compile Include="LeagueOfLegends\LiveClient.fs" />
 
     <Compile Include="Lovense\Contracts.fs" />
+    <Compile Include="Lovense\Formatting.fs" />
     <Compile Include="Lovense\FunctionRanges.fs" />
     <Compile Include="Lovense\ActionCodec.fs" />
     <Compile Include="Lovense\CapabilityResolver.fs" />

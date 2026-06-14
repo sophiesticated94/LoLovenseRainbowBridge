@@ -25,7 +25,12 @@ type OcrCacheJob
                 while not ct.IsCancellationRequested do
                     try
                         if not positionRotationConfig.Enable then
-                            cache.UpdateOcrFailure "Position-based rotation is disabled."
+                            cache.UpdateOcrDisabled()
+                            logger.Debug(
+                                "runtime.ocr_job.disabled",
+                                "OCR cache job is disabled by configuration.",
+                                {| ocrPollMs = runtimeConfig.OcrPollMs |}
+                            )
                             do! Task.Delay(runtimeConfig.OcrPollMs, ct)
                         else
                             let minimapRegion =

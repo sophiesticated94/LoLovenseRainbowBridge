@@ -25,9 +25,6 @@ type StandardApiCallbackServer =
 
 module StandardApi =
 
-    let private escapeJsonString (value: string) =
-        value.Replace("\\", "\\\\").Replace("\"", "\\\"")
-
     let private missingDeveloperFields (developer: LovenseDeveloperConfig) =
         [
             if developer.Token |> Option.forall String.IsNullOrWhiteSpace then
@@ -40,7 +37,7 @@ module StandardApi =
         value
         |> Option.filter (String.IsNullOrWhiteSpace >> not)
         |> Option.map (fun text ->
-            let escaped = escapeJsonString text
+            let escaped = LovenseFormatting.escapeJsonString text
             sprintf ",\"%s\":\"%s\"" name escaped)
         |> Option.defaultValue ""
 
@@ -48,7 +45,7 @@ module StandardApi =
         match developer.Token, developer.UserId with
         | Some token, Some uid when not (String.IsNullOrWhiteSpace token) && not (String.IsNullOrWhiteSpace uid) ->
             Ok
-                $"""{{"token":"{escapeJsonString token}","uid":"{escapeJsonString uid}"{optionalStringField Constants.Lovense.UserNameField developer.UserName}{optionalStringField Constants.Lovense.UserTokenField developer.UserToken},"v":2}}"""
+                $"""{{"token":"{LovenseFormatting.escapeJsonString token}","uid":"{LovenseFormatting.escapeJsonString uid}"{optionalStringField Constants.Lovense.UserNameField developer.UserName}{optionalStringField Constants.Lovense.UserTokenField developer.UserToken},"v":2}}"""
         | _ ->
             Error(MissingDeveloperCredentials(missingDeveloperFields developer))
 
@@ -56,7 +53,7 @@ module StandardApi =
         match developer.UserId with
         | Some uid when not (String.IsNullOrWhiteSpace uid) ->
             Ok
-                $"""{{"token":"{Constants.Lovense.AuthTokenRedacted}","uid":"{escapeJsonString uid}"{optionalStringField Constants.Lovense.UserNameField developer.UserName}{optionalStringField Constants.Lovense.UserTokenField (developer.UserToken |> Option.map (fun _ -> Constants.Lovense.AuthTokenRedacted))},"v":2}}"""
+                $"""{{"token":"{Constants.Lovense.AuthTokenRedacted}","uid":"{LovenseFormatting.escapeJsonString uid}"{optionalStringField Constants.Lovense.UserNameField developer.UserName}{optionalStringField Constants.Lovense.UserTokenField (developer.UserToken |> Option.map (fun _ -> Constants.Lovense.AuthTokenRedacted))},"v":2}}"""
         | _ ->
             buildQrCodeRequestBody developer |> Result.map (fun _ -> "")
 
@@ -209,7 +206,7 @@ module StandardApi =
                                             "Lovense Standard API callback rejected.",
                                             {| error = message; bodyLength = body.Length |}
                                         )
-                                        403, $"""{{"ok":false,"message":"{escapeJsonString message}"}}"""
+                                        403, $"""{{"ok":false,"message":"{LovenseFormatting.escapeJsonString message}"}}"""
                                     | Ok deviceInfo ->
                                         logger.Info(
                                             "lovense.standard.callback.accepted",
@@ -270,14 +267,14 @@ module StandardApi =
             let toyPart =
                 plan.ToyId
                 |> Option.map (fun toyId ->
-                    let escaped = escapeJsonString toyId
+                    let escaped = LovenseFormatting.escapeJsonString toyId
                     sprintf ",\"toy\":\"%s\"" escaped)
                 |> Option.defaultValue ""
 
             let stopPrevious = if plan.StopPrevious then 1 else 0
 
             Ok
-                $"""{{"token":"{escapeJsonString token}","uid":"{escapeJsonString uid}","command":"{Constants.Lovense.CommandName}","action":"{escapeJsonString actionString}","timeSec":{plan.TimeSec.ToString(Globalization.CultureInfo.InvariantCulture)},"stopPrevious":{stopPrevious},"apiVer":{Constants.Lovense.ApiVersion}{toyPart}}}"""
+                $"""{{"token":"{LovenseFormatting.escapeJsonString token}","uid":"{LovenseFormatting.escapeJsonString uid}","command":"{Constants.Lovense.CommandName}","action":"{LovenseFormatting.escapeJsonString actionString}","timeSec":{LovenseFormatting.invariantFloat plan.TimeSec},"stopPrevious":{stopPrevious},"apiVer":{Constants.Lovense.ApiVersion}{toyPart}}}"""
         | _ ->
             Error(MissingDeveloperCredentials(missingDeveloperFields developer))
 
