@@ -49,7 +49,12 @@
     <Compile Include="Lovense\FunctionRanges.fs" />
     <Compile Include="Lovense\ActionCodec.fs" />
     <Compile Include="Lovense\CapabilityResolver.fs" />
-    <Compile Include="Lovense\RuleEngine.fs" />
+    <Compile Include="Lovense\RuleTypes.fs" />
+    <Compile Include="Lovense\RuleInternals.fs" />
+    <Compile Include="Lovense\RuleExpressionEvaluator.fs" />
+    <Compile Include="Lovense\RuleInputBuilder.fs" />
+    <Compile Include="Lovense\RuleInterpreter.fs" />
+    <Compile Include="Lovense\RuleCommandBuilder.fs" />
     <Compile Include="Lovense\Mapping.fs" />
     <Compile Include="Lovense\Transport.fs" />
     <Compile Include="Lovense\DeviceInfo.fs" />
