@@ -58,6 +58,9 @@
     <Compile Include="Lovense\Auth.fs" />
     <Compile Include="Lovense\SocketUrl.fs" />
     <Compile Include="Lovense\SocketRuntime.fs" />
+    <Compile Include="Lovense\ClientState.fs" />
+    <Compile Include="Lovense\ClientConnection.fs" />
+    <Compile Include="Lovense\ClientCommand.fs" />
     <Compile Include="Lovense\Client.fs" />
 
     <Compile Include="Recording\Recording.fs" />

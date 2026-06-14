@@ -92,7 +92,7 @@ module SocketRuntime =
 
             if eventName = Constants.Lovense.DeviceInfoListen then
                 let deviceInfo = logDeviceInfo config logger correlationId raw
-                do! onDeviceInfo deviceInfo
+                onDeviceInfo deviceInfo
 
             logger.Info(
                 $"lovense.socket.{eventName}",

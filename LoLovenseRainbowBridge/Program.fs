@@ -131,7 +131,7 @@ module Program =
 
         | Some gameId, _ ->
             use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger)
-            lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult()
+            lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult() |> ignore
 
             match recorder with
             | None ->
@@ -156,7 +156,7 @@ module Program =
         | None, false ->
             use leagueClient = new LeagueLiveClient(config.League.BaseUrl, logger)
             use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger)
-            lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult()
+            lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult() |> ignore
             let runtimeCache = RuntimeState.RuntimeStateCache()
             use serviceProvider =
                 ServiceCollection()
