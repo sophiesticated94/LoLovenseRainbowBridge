@@ -268,6 +268,44 @@ module Loader =
                     RotationSensitivity = floatValue root "PositionBasedRotation:RotationSensitivity"
                     TemplateImagePath = optionalString root "PositionBasedRotation:TemplateImagePath"
                     DebugMode = boolValue root "PositionBasedRotation:DebugMode"
+                    PositionWeights =
+                        {
+                            Center =
+                                {
+                                    Left = floatValue root "PositionBasedRotation:PositionWeights:Center:Left"
+                                    Right = floatValue root "PositionBasedRotation:PositionWeights:Center:Right"
+                                }
+                            TopLeft =
+                                {
+                                    Left = floatValue root "PositionBasedRotation:PositionWeights:TopLeft:Left"
+                                    Right = floatValue root "PositionBasedRotation:PositionWeights:TopLeft:Right"
+                                }
+                            TopRight =
+                                {
+                                    Left = floatValue root "PositionBasedRotation:PositionWeights:TopRight:Left"
+                                    Right = floatValue root "PositionBasedRotation:PositionWeights:TopRight:Right"
+                                }
+                            BottomLeft =
+                                {
+                                    Left = floatValue root "PositionBasedRotation:PositionWeights:BottomLeft:Left"
+                                    Right = floatValue root "PositionBasedRotation:PositionWeights:BottomLeft:Right"
+                                }
+                            BottomRight =
+                                {
+                                    Left = floatValue root "PositionBasedRotation:PositionWeights:BottomRight:Left"
+                                    Right = floatValue root "PositionBasedRotation:PositionWeights:BottomRight:Right"
+                                }
+                            Left =
+                                {
+                                    Left = floatValue root "PositionBasedRotation:PositionWeights:Left:Left"
+                                    Right = floatValue root "PositionBasedRotation:PositionWeights:Left:Right"
+                                }
+                            Right =
+                                {
+                                    Left = floatValue root "PositionBasedRotation:PositionWeights:Right:Left"
+                                    Right = floatValue root "PositionBasedRotation:PositionWeights:Right:Right"
+                                }
+                        }
                 }
         }
 

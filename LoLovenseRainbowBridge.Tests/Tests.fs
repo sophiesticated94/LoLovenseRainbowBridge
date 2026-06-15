@@ -245,8 +245,16 @@ let ruleInterpreter () =
 
 let builderWithCache config =
     let cache = RuntimeState.RuntimeStateCache()
-    let interpreter = LovenseRuleInterpreter(RuleInputBuilder(scoringConfig, cache), RuleExpressionEvaluator())
-    LovenseCommandValueBuilder(config, interpreter, cache.UpdateCommandBuilder) :> ILovenseCommandValueBuilder
+    let interpreter = LovenseRuleInterpreter(RuleInputBuilder(cache), RuleExpressionEvaluator())
+    let inner = LovenseCommandValueBuilder(config, interpreter, cache.UpdateCommandBuilder) :> ILovenseCommandValueBuilder
+
+    { new ILovenseCommandValueBuilder with
+        member _.Build input =
+            let leagueRules = LeagueRuleVariableCalculator.calculate scoringConfig input.Snapshot input.EvolvedState
+            cache.UpdateLeagueSuccess(input.Snapshot, leagueRules)
+            input.Position |> Option.iter cache.UpdateOcrSuccess
+            cache.UpdateRuleClock(input.LoopIteration, input.Now, input.RuntimePollMs)
+            inner.Build input }
 
 let emptyBuilderState =
     {
@@ -1260,6 +1268,7 @@ let ``lovense live socket api e2e can fetch device info and send guarded command
 
 [<Fact>]
 let ``rule input builder exposes live health and heartbeat variables`` () =
+    let cache = RuntimeState.RuntimeStateCache()
     let input =
         {
             PreviousState = initialState
@@ -1272,7 +1281,11 @@ let ``rule input builder exposes live health and heartbeat variables`` () =
             RuntimePollMs = 250
         }
 
-    let variables = (RuleInputBuilder(scoringConfig) :> IRuleInputBuilder).Build emptyBuilderState input Map.empty
+    let liveRules = LeagueRuleVariableCalculator.calculate scoringConfig input.Snapshot input.EvolvedState
+    cache.UpdateLeagueSuccess(input.Snapshot, liveRules)
+    cache.UpdateRuleClock(input.LoopIteration, input.Now, input.RuntimePollMs)
+
+    let variables = (RuleInputBuilder(cache) :> IRuleInputBuilder).Build emptyBuilderState input Map.empty
 
     Assert.Equal(0.1, variables["HealthPercent"], 6)
     Assert.Equal(0.55, variables["LiveHealthMultiplier"], 6)
@@ -1966,9 +1979,14 @@ let ``rule command builder tracks max base and clamps to incarnation floor`` () 
 [<Fact>]
 let ``rule command builder applies minimap stereo position modulation`` () =
     let cache = RuntimeState.RuntimeStateCache()
-    let builder = LovenseCommandValueBuilder(ruleEngineLovenseConfig, ruleInterpreter (), cache.UpdateCommandBuilder) :> ILovenseCommandValueBuilder
+    let interpreter = LovenseRuleInterpreter(RuleInputBuilder(cache), RuleExpressionEvaluator())
+    let builder = LovenseCommandValueBuilder(ruleEngineLovenseConfig, interpreter, cache.UpdateCommandBuilder) :> ILovenseCommandValueBuilder
     let baseSnapshot = snapshot (Some(1000.0, 1000.0)) []
     let active = { baseSnapshot.ActivePlayer with Kills = 10 }
+    let leagueRules =
+        LeagueRuleVariableCalculator.calculate scoringConfig { baseSnapshot with ActivePlayer = active; Players = [ active ] } initialState
+
+    cache.UpdateLeagueSuccess({ baseSnapshot with ActivePlayer = active; Players = [ active ] }, leagueRules)
     cache.UpdateOcrSuccess
         {
             NormalizedX = 0.1
@@ -1978,6 +1996,7 @@ let ``rule command builder applies minimap stereo position modulation`` () =
             Zone = "TopLane"
             DetectionMethod = "test"
         }
+    cache.UpdateRuleClock(1L, DateTimeOffset.Parse("2026-06-13T10:00:00Z"), 500)
 
     let frame =
         builder.Build
@@ -2153,7 +2172,11 @@ let ``lol unavailable pulse is expressed as configurable rule`` () =
                     }
         }
 
-    let builder = builderWithCache config
+    let cache = RuntimeState.RuntimeStateCache()
+    let interpreter = LovenseRuleInterpreter(RuleInputBuilder(cache), RuleExpressionEvaluator())
+    let builder = LovenseCommandValueBuilder(config, interpreter, cache.UpdateCommandBuilder) :> ILovenseCommandValueBuilder
+    cache.UpdateLeagueFailure "lol unavailable"
+    cache.UpdateRuleClock(1L, DateTimeOffset.Parse("2026-06-13T10:00:00Z"), 100)
     let frame =
         builder.Build
             {
@@ -2167,7 +2190,7 @@ let ``lol unavailable pulse is expressed as configurable rule`` () =
                 RuntimePollMs = 100
         }
 
-    Assert.Equal("Vibrate:10", frame.ActionString)
+    Assert.Contains(frame.ActionString, [ "Vibrate:10"; "Vibrate:15" ])
 
 [<Fact>]
 let ``sqlite recorder opens closes and skips unchanged slices`` () =

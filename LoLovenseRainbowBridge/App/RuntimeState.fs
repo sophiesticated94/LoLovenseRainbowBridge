@@ -57,6 +57,122 @@ module RuntimeState =
             ToyFailureAttemptsSinceSuccess: int
         }
 
+    type LeagueRuleCacheState =
+        {
+            [<field: CalculatorVariable(Name = "Kills")>]
+            Kills: float
+            [<field: CalculatorVariable(Name = "Deaths")>]
+            Deaths: float
+            [<field: CalculatorVariable(Name = "Assists")>]
+            Assists: float
+            [<field: CalculatorVariable(Name = "CreepScore")>]
+            CreepScore: float
+            [<field: CalculatorVariable(Name = "CS")>]
+            CS: float
+            [<field: CalculatorVariable(Name = "WardScore")>]
+            WardScore: float
+            [<field: CalculatorVariable(Name = "Level")>]
+            Level: float
+            [<field: CalculatorVariable(Name = "CurrentHealth")>]
+            CurrentHealth: float
+            [<field: CalculatorVariable(Name = "MaxHealth")>]
+            MaxHealth: float
+            [<field: CalculatorVariable(Name = "HealthPercent")>]
+            HealthPercent: float
+            [<field: CalculatorVariable(Name = "MissingHealth")>]
+            MissingHealth: float
+            [<field: CalculatorVariable(Name = "GameTime")>]
+            GameTime: float
+            [<field: CalculatorVariable(Name = "RawPerformanceScore")>]
+            RawPerformanceScore: float
+            [<field: CalculatorVariable(Name = "NormalizedScore")>]
+            NormalizedScore: float
+            [<field: CalculatorVariable(Name = "PerformanceScore")>]
+            PerformanceScore: float
+            [<field: CalculatorVariable(Name = "DeathPenalty")>]
+            DeathPenalty: float
+            [<field: CalculatorVariable(Name = "LiveHealthMultiplier")>]
+            LiveHealthMultiplier: float
+            [<field: CalculatorVariable(Name = "HealthPressureMultiplier")>]
+            HealthPressureMultiplier: float
+            [<field: CalculatorVariable(Name = "ActiveKill")>]
+            ActiveKill: float
+            [<field: CalculatorVariable(Name = "ActiveKillCount")>]
+            ActiveKillCount: float
+            [<field: CalculatorVariable(Name = "ActiveDeath")>]
+            ActiveDeath: float
+            [<field: CalculatorVariable(Name = "ActiveDeathCount")>]
+            ActiveDeathCount: float
+            [<field: CalculatorVariable(Name = "ActiveMultikill")>]
+            ActiveMultikill: float
+            [<field: CalculatorVariable(Name = "MultikillCount")>]
+            MultikillCount: float
+            [<field: CalculatorVariable(Name = "TotalMultikillCount")>]
+            TotalMultikillCount: float
+            [<field: CalculatorVariable(Name = "ObjectiveWaveValue")>]
+            ObjectiveWaveValue: float
+            [<field: CalculatorVariable(Name = "TeamfightKillCount")>]
+            TeamfightKillCount: float
+            [<field: CalculatorVariable(Name = "TeamfightBurstValue")>]
+            TeamfightBurstValue: float
+            [<field: CalculatorVariable(Name = "AceBurstValue")>]
+            AceBurstValue: float
+            [<field: CalculatorVariable(Name = "HeartbeatAmplitude")>]
+            HeartbeatAmplitude: float
+            [<field: CalculatorVariable(Name = "LowHealthHeartbeatThreshold")>]
+            LowHealthHeartbeatThreshold: float
+            [<field: CalculatorVariable(Name = "CriticalHealthHeartbeatThreshold")>]
+            CriticalHealthHeartbeatThreshold: float
+            [<field: CalculatorVariable(Name = "HeartbeatPulseMaxAmplitude")>]
+            HeartbeatPulseMaxAmplitude: float
+            [<field: CalculatorVariable(Name = "HeartbeatPulseCycleSec")>]
+            HeartbeatPulseCycleSec: float
+            [<field: CalculatorVariable(Name = "HeartbeatPulseStartPhase")>]
+            HeartbeatPulseStartPhase: float
+            [<field: CalculatorVariable(Name = "HeartbeatPulsePeakPhase")>]
+            HeartbeatPulsePeakPhase: float
+            [<field: CalculatorVariable(Name = "HeartbeatPulseEndPhase")>]
+            HeartbeatPulseEndPhase: float
+            [<field: CalculatorVariable(Name = "LaningTextureValue")>]
+            LaningTextureValue: float
+            [<field: CalculatorVariable(Name = "JungleTensionValue")>]
+            JungleTensionValue: float
+        }
+
+    type RuleClockCacheState =
+        {
+            [<field: CalculatorVariable(Name = "LoopIteration")>]
+            LoopIteration: float
+            [<field: CalculatorVariable(Name = "LoopIterationWithinSecond")>]
+            LoopIterationWithinSecond: float
+            [<field: CalculatorVariable(Name = "LoopIterationsPerSecond")>]
+            LoopIterationsPerSecond: float
+            [<field: CalculatorVariable(Name = "LoopTimeSec")>]
+            LoopTimeSec: float
+            [<field: CalculatorVariable(Name = "RuntimePollMs")>]
+            RuntimePollMs: float
+        }
+
+    type OcrPositionProjection =
+        {
+            PositionLeftWeight: float
+            PositionRightWeight: float
+            PositionIsCenter: bool
+            PositionIsTopLeft: bool
+            PositionIsTopRight: bool
+            PositionIsBottomLeft: bool
+            PositionIsBottomRight: bool
+            PositionIsLeft: bool
+            PositionIsRight: bool
+            PositionZoneTopLane: bool
+            PositionZoneMidLane: bool
+            PositionZoneBottomLane: bool
+            PositionZoneJungle: bool
+            PositionZoneRiver: bool
+            PositionZoneBase: bool
+            PositionZoneUnknown: bool
+        }
+
     type OcrCacheState =
         {
             Position: Lovense.LovensePlanningPosition option
@@ -72,6 +188,34 @@ module RuntimeState =
             PositionLeftWeight: float
             [<field: CalculatorVariable(Name = "PositionRightWeight")>]
             PositionRightWeight: float
+            [<field: CalculatorVariable(Name = "PositionIsCenter")>]
+            PositionIsCenter: bool
+            [<field: CalculatorVariable(Name = "PositionIsTopLeft")>]
+            PositionIsTopLeft: bool
+            [<field: CalculatorVariable(Name = "PositionIsTopRight")>]
+            PositionIsTopRight: bool
+            [<field: CalculatorVariable(Name = "PositionIsBottomLeft")>]
+            PositionIsBottomLeft: bool
+            [<field: CalculatorVariable(Name = "PositionIsBottomRight")>]
+            PositionIsBottomRight: bool
+            [<field: CalculatorVariable(Name = "PositionIsLeft")>]
+            PositionIsLeft: bool
+            [<field: CalculatorVariable(Name = "PositionIsRight")>]
+            PositionIsRight: bool
+            [<field: CalculatorVariable(Name = "PositionZoneTopLane")>]
+            PositionZoneTopLane: bool
+            [<field: CalculatorVariable(Name = "PositionZoneMidLane")>]
+            PositionZoneMidLane: bool
+            [<field: CalculatorVariable(Name = "PositionZoneBottomLane")>]
+            PositionZoneBottomLane: bool
+            [<field: CalculatorVariable(Name = "PositionZoneJungle")>]
+            PositionZoneJungle: bool
+            [<field: CalculatorVariable(Name = "PositionZoneRiver")>]
+            PositionZoneRiver: bool
+            [<field: CalculatorVariable(Name = "PositionZoneBase")>]
+            PositionZoneBase: bool
+            [<field: CalculatorVariable(Name = "PositionZoneUnknown")>]
+            PositionZoneUnknown: bool
             [<field: CalculatorVariable(Name = "OcrDataAcquired")>]
             DataAcquired: bool
             [<field: CalculatorVariable(Name = "OcrFailureAttemptsSinceSuccess")>]
@@ -115,6 +259,8 @@ module RuntimeState =
     type RuntimeCacheSnapshot =
         {
             RuntimeContext: RuntimeContextCacheState
+            LeagueRules: LeagueRuleCacheState
+            RuleClock: RuleClockCacheState
             CommandBuilder: CommandBuilderCacheState
             League: LeagueCacheState
             Ocr: OcrCacheState
@@ -148,6 +294,20 @@ module RuntimeState =
             PositionConfidence = 0.0
             PositionLeftWeight = 0.0
             PositionRightWeight = 0.0
+            PositionIsCenter = false
+            PositionIsTopLeft = false
+            PositionIsTopRight = false
+            PositionIsBottomLeft = false
+            PositionIsBottomRight = false
+            PositionIsLeft = false
+            PositionIsRight = false
+            PositionZoneTopLane = false
+            PositionZoneMidLane = false
+            PositionZoneBottomLane = false
+            PositionZoneJungle = false
+            PositionZoneRiver = false
+            PositionZoneBase = false
+            PositionZoneUnknown = false
             DataAcquired = false
             DetectionFailures = 0
             LastSuccessfulAt = None
@@ -172,6 +332,58 @@ module RuntimeState =
             ToyFailureAttemptsSinceSuccess = 0
         }
 
+    let private initialLeagueRules =
+        {
+            Kills = 0.0
+            Deaths = 0.0
+            Assists = 0.0
+            CreepScore = 0.0
+            CS = 0.0
+            WardScore = 0.0
+            Level = 0.0
+            CurrentHealth = 0.0
+            MaxHealth = 0.0
+            HealthPercent = 1.0
+            MissingHealth = 0.0
+            GameTime = 0.0
+            RawPerformanceScore = 0.0
+            NormalizedScore = 0.0
+            PerformanceScore = 0.0
+            DeathPenalty = 0.0
+            LiveHealthMultiplier = 1.0
+            HealthPressureMultiplier = 1.0
+            ActiveKill = 0.0
+            ActiveKillCount = 0.0
+            ActiveDeath = 0.0
+            ActiveDeathCount = 0.0
+            ActiveMultikill = 0.0
+            MultikillCount = 0.0
+            TotalMultikillCount = 0.0
+            ObjectiveWaveValue = 0.0
+            TeamfightKillCount = 0.0
+            TeamfightBurstValue = 0.0
+            AceBurstValue = 0.0
+            HeartbeatAmplitude = 0.0
+            LowHealthHeartbeatThreshold = 0.0
+            CriticalHealthHeartbeatThreshold = 0.0
+            HeartbeatPulseMaxAmplitude = 0.0
+            HeartbeatPulseCycleSec = 0.0
+            HeartbeatPulseStartPhase = 0.0
+            HeartbeatPulsePeakPhase = 0.0
+            HeartbeatPulseEndPhase = 0.0
+            LaningTextureValue = 0.0
+            JungleTensionValue = 0.0
+        }
+
+    let private initialRuleClock =
+        {
+            LoopIteration = 0.0
+            LoopIterationWithinSecond = 0.0
+            LoopIterationsPerSecond = 0.0
+            LoopTimeSec = 0.0
+            RuntimePollMs = 0.0
+        }
+
     let private initialCommandBuilder =
         {
             CurrentIncarnationId = 1
@@ -183,19 +395,6 @@ module RuntimeState =
             LastFunctionState = LovenseActionCodec.emptyState
             LastActionString = None
         }
-
-    let positionWeightsFromQuadrant quadrant normalizedX =
-        match quadrant |> Option.ofObj |> Option.defaultValue "" with
-        | value when String.Equals(value, "Center", StringComparison.OrdinalIgnoreCase) -> 1.0, 1.0
-        | value when String.Equals(value, "TopLeft", StringComparison.OrdinalIgnoreCase) -> 1.35, 0.35
-        | value when String.Equals(value, "TopRight", StringComparison.OrdinalIgnoreCase) -> 0.35, 1.35
-        | value when String.Equals(value, "BottomLeft", StringComparison.OrdinalIgnoreCase) -> 0.0, 0.0
-        | value when String.Equals(value, "BottomRight", StringComparison.OrdinalIgnoreCase) -> 0.55, 1.05
-        | value when String.Equals(value, "Left", StringComparison.OrdinalIgnoreCase) -> 1.15, 0.65
-        | value when String.Equals(value, "Right", StringComparison.OrdinalIgnoreCase) -> 0.65, 1.15
-        | _ ->
-            CapabilityResolver.stereoWeightsFromNormalizedX 100 normalizedX
-            |> fun (l, r) -> float l / 100.0, float r / 100.0
 
     let private initialLovense =
         {
@@ -224,6 +423,8 @@ module RuntimeState =
         let mutable snapshot =
             {
                 RuntimeContext = initialRuntimeContext
+                LeagueRules = initialLeagueRules
+                RuleClock = initialRuleClock
                 CommandBuilder = initialCommandBuilder
                 League = initialLeague
                 Ocr = initialOcr
@@ -259,6 +460,14 @@ module RuntimeState =
             member _.Read() =
                 lock gate (fun () -> box snapshot)
 
+        member _.UpdateLeagueRules(leagueRules: LeagueRuleCacheState) =
+            lock gate (fun () ->
+                snapshot <- { snapshot with LeagueRules = leagueRules })
+
+        member _.UpdateRuleClock(ruleClock: RuleClockCacheState) =
+            lock gate (fun () ->
+                snapshot <- { snapshot with RuleClock = ruleClock })
+
         member _.UpdateCommandBuilder(builder: CommandBuilderCacheState) =
             lock gate (fun () ->
                 snapshot <-
@@ -277,7 +486,7 @@ module RuntimeState =
                                 }
                     })
 
-        member _.UpdateLeagueSuccess leagueSnapshot =
+        member _.UpdateLeagueSuccess(leagueSnapshot, leagueRules: LeagueRuleCacheState) =
             lock gate (fun () ->
                 let now = DateTimeOffset.UtcNow
                 snapshot <-
@@ -294,6 +503,7 @@ module RuntimeState =
                                         LastError = None
                                         Version = snapshot.League.Version + 1L
                                 }
+                            LeagueRules = leagueRules
                     }
                 snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
@@ -315,10 +525,9 @@ module RuntimeState =
                     }
                 snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
-        member _.UpdateOcrSuccess position =
+        member this.UpdateOcrSuccess(position, projection: OcrPositionProjection) =
             lock gate (fun () ->
                 let now = DateTimeOffset.UtcNow
-                let leftWeight, rightWeight = positionWeightsFromQuadrant position.Quadrant position.NormalizedX
                 snapshot <-
                     {
                         snapshot with
@@ -330,8 +539,22 @@ module RuntimeState =
                                         PositionX = position.NormalizedX
                                         PositionY = position.NormalizedY
                                         PositionConfidence = position.Confidence
-                                        PositionLeftWeight = leftWeight
-                                        PositionRightWeight = rightWeight
+                                        PositionLeftWeight = projection.PositionLeftWeight
+                                        PositionRightWeight = projection.PositionRightWeight
+                                        PositionIsCenter = projection.PositionIsCenter
+                                        PositionIsTopLeft = projection.PositionIsTopLeft
+                                        PositionIsTopRight = projection.PositionIsTopRight
+                                        PositionIsBottomLeft = projection.PositionIsBottomLeft
+                                        PositionIsBottomRight = projection.PositionIsBottomRight
+                                        PositionIsLeft = projection.PositionIsLeft
+                                        PositionIsRight = projection.PositionIsRight
+                                        PositionZoneTopLane = projection.PositionZoneTopLane
+                                        PositionZoneMidLane = projection.PositionZoneMidLane
+                                        PositionZoneBottomLane = projection.PositionZoneBottomLane
+                                        PositionZoneJungle = projection.PositionZoneJungle
+                                        PositionZoneRiver = projection.PositionZoneRiver
+                                        PositionZoneBase = projection.PositionZoneBase
+                                        PositionZoneUnknown = projection.PositionZoneUnknown
                                         DataAcquired = true
                                         DetectionFailures = 0
                                         LastSuccessfulAt = Some now
@@ -341,6 +564,45 @@ module RuntimeState =
                                 }
                     }
                 snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
+
+        member this.UpdateOcrSuccess(position: Lovense.LovensePlanningPosition) =
+            let projection =
+                let quadrant = position.Quadrant
+                let zone = position.Zone
+
+                let leftWeight, rightWeight =
+                    match quadrant |> Option.ofObj |> Option.defaultValue "" with
+                    | value when String.Equals(value, "Center", StringComparison.OrdinalIgnoreCase) -> 1.0, 1.0
+                    | value when String.Equals(value, "TopLeft", StringComparison.OrdinalIgnoreCase) -> 1.35, 0.35
+                    | value when String.Equals(value, "TopRight", StringComparison.OrdinalIgnoreCase) -> 0.35, 1.35
+                    | value when String.Equals(value, "BottomLeft", StringComparison.OrdinalIgnoreCase) -> 0.0, 0.0
+                    | value when String.Equals(value, "BottomRight", StringComparison.OrdinalIgnoreCase) -> 0.55, 1.05
+                    | value when String.Equals(value, "Left", StringComparison.OrdinalIgnoreCase) -> 1.15, 0.65
+                    | value when String.Equals(value, "Right", StringComparison.OrdinalIgnoreCase) -> 0.65, 1.15
+                    | _ ->
+                        let left, right = CapabilityResolver.stereoWeightsFromNormalizedX 100 position.NormalizedX
+                        float left / 100.0, float right / 100.0
+
+                {
+                    PositionLeftWeight = leftWeight
+                    PositionRightWeight = rightWeight
+                    PositionIsCenter = String.Equals(quadrant, "Center", StringComparison.OrdinalIgnoreCase)
+                    PositionIsTopLeft = String.Equals(quadrant, "TopLeft", StringComparison.OrdinalIgnoreCase)
+                    PositionIsTopRight = String.Equals(quadrant, "TopRight", StringComparison.OrdinalIgnoreCase)
+                    PositionIsBottomLeft = String.Equals(quadrant, "BottomLeft", StringComparison.OrdinalIgnoreCase)
+                    PositionIsBottomRight = String.Equals(quadrant, "BottomRight", StringComparison.OrdinalIgnoreCase)
+                    PositionIsLeft = String.Equals(quadrant, "Left", StringComparison.OrdinalIgnoreCase)
+                    PositionIsRight = String.Equals(quadrant, "Right", StringComparison.OrdinalIgnoreCase)
+                    PositionZoneTopLane = String.Equals(zone, "TopLane", StringComparison.OrdinalIgnoreCase)
+                    PositionZoneMidLane = String.Equals(zone, "MidLane", StringComparison.OrdinalIgnoreCase)
+                    PositionZoneBottomLane = String.Equals(zone, "BottomLane", StringComparison.OrdinalIgnoreCase)
+                    PositionZoneJungle = String.Equals(zone, "Jungle", StringComparison.OrdinalIgnoreCase)
+                    PositionZoneRiver = String.Equals(zone, "River", StringComparison.OrdinalIgnoreCase)
+                    PositionZoneBase = String.Equals(zone, "Base", StringComparison.OrdinalIgnoreCase)
+                    PositionZoneUnknown = String.IsNullOrWhiteSpace zone || String.Equals(zone, "Unknown", StringComparison.OrdinalIgnoreCase)
+                }
+
+            this.UpdateOcrSuccess(position, projection)
 
         member _.UpdateOcrFailure error =
             lock gate (fun () ->
@@ -358,6 +620,20 @@ module RuntimeState =
                                         PositionConfidence = 0.0
                                         PositionLeftWeight = 0.0
                                         PositionRightWeight = 0.0
+                                        PositionIsCenter = false
+                                        PositionIsTopLeft = false
+                                        PositionIsTopRight = false
+                                        PositionIsBottomLeft = false
+                                        PositionIsBottomRight = false
+                                        PositionIsLeft = false
+                                        PositionIsRight = false
+                                        PositionZoneTopLane = false
+                                        PositionZoneMidLane = false
+                                        PositionZoneBottomLane = false
+                                        PositionZoneJungle = false
+                                        PositionZoneRiver = false
+                                        PositionZoneBase = false
+                                        PositionZoneUnknown = false
                                         DataAcquired = false
                                         DetectionFailures = snapshot.Ocr.DetectionFailures + 1
                                         UnavailableSince = snapshot.Ocr.UnavailableSince |> Option.orElse (Some now)
@@ -383,6 +659,20 @@ module RuntimeState =
                                         PositionConfidence = 0.0
                                         PositionLeftWeight = 0.0
                                         PositionRightWeight = 0.0
+                                        PositionIsCenter = false
+                                        PositionIsTopLeft = false
+                                        PositionIsTopRight = false
+                                        PositionIsBottomLeft = false
+                                        PositionIsBottomRight = false
+                                        PositionIsLeft = false
+                                        PositionIsRight = false
+                                        PositionZoneTopLane = false
+                                        PositionZoneMidLane = false
+                                        PositionZoneBottomLane = false
+                                        PositionZoneJungle = false
+                                        PositionZoneRiver = false
+                                        PositionZoneBase = false
+                                        PositionZoneUnknown = false
                                         DataAcquired = false
                                         UnavailableSince = snapshot.Ocr.UnavailableSince |> Option.orElse (Some now)
                                         LastError = Some "Position-based rotation is disabled."
@@ -484,6 +774,27 @@ module RuntimeState =
                                 }
                     }
                 snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
+
+        member _.UpdateRuleClock(loopIteration: int64, now: DateTimeOffset, runtimePollMs: int) =
+            lock gate (fun () ->
+                let safePollMs = max 1 runtimePollMs
+                let iterationsPerSecond = max 1.0 (Math.Round(1000.0 / float safePollMs))
+                let loopIterationFloat = float loopIteration
+                let loopIterationWithinSecond = float ((int64 loopIterationFloat) % int64 iterationsPerSecond)
+                let loopTimeSec = loopIterationFloat * float safePollMs / 1000.0
+
+                snapshot <-
+                    {
+                        snapshot with
+                            RuleClock =
+                                {
+                                    LoopIteration = loopIterationFloat
+                                    LoopIterationWithinSecond = loopIterationWithinSecond
+                                    LoopIterationsPerSecond = iterationsPerSecond
+                                    LoopTimeSec = loopTimeSec
+                                    RuntimePollMs = float safePollMs
+                                }
+                    })
 
     let planningQuadrant normalizedX normalizedY =
         if normalizedX >= 0.42 && normalizedX <= 0.58 && normalizedY >= 0.42 && normalizedY <= 0.58 then "Center"

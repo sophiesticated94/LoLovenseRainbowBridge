@@ -22,19 +22,6 @@ module RuleInternals =
     let functionFromConfig value =
         if String.IsNullOrWhiteSpace value then None else LovenseActionCodec.functionFromName value
 
-    let private activeDeathEvents (snapshot: BridgeSnapshot) =
-        snapshot.Events
-        |> List.filter (fun ev ->
-            match ev.Kind, ev.VictimName with
-            | ChampionKill, Some victim ->
-                snapshot.ActiveAliases
-                |> List.exists (fun alias -> keyEquals alias victim)
-            | _ -> false)
-
-    let hasNewActiveDeath previousState snapshot =
-        activeDeathEvents snapshot
-        |> List.exists (fun ev -> not (previousState.SeenEventIds.Contains ev.EventId))
-
     let addContribution name existing =
         if existing.Contributions |> List.contains name then existing.Contributions else name :: existing.Contributions
 
@@ -84,6 +71,19 @@ module RuleInternals =
 
     let mergeVariables left right =
         right |> Map.fold (fun acc key value -> acc |> Map.add key value) left
+
+    let previousFunctionVariables (lastSentFunctionState: Map<string, int>) =
+        LovenseActionCodec.emptyState
+        |> Map.fold (fun acc name value ->
+            let previous = lastSentFunctionState |> Map.tryFind name |> Option.defaultValue value
+            acc |> Map.add $"PreviousFunction_{name}" (float previous)) Map.empty
+
+    let evaluationVariables (layers: Map<LovenseActionFunction, LovenseFunctionLayers>) (lastSentFunctionState: Map<string, int>) =
+        Map.empty
+        |> mergeVariables (layerVariables layers)
+        |> mergeVariables (functionRangeVariables ())
+        |> mergeVariables (previousFunctionVariables lastSentFunctionState)
+        |> Map.add "Pi" Math.PI
 
     let stateVariableName slot =
         match slot |> Option.ofObj |> Option.defaultValue "" with

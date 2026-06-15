@@ -18,6 +18,8 @@ type LeagueCacheJob
         logger: StructuredSessionLogger
     ) =
 
+    let mutable generatorState = initialState
+
     interface IAppJob with
         member _.Name = "LeagueCacheJob"
 
@@ -52,7 +54,11 @@ type LeagueCacheJob
 
                             | Ok parsed ->
                                 let bridgeSnapshot = Mapper.toBridgeSnapshot scoringConfig parsed.Snapshot
-                                cache.UpdateLeagueSuccess bridgeSnapshot
+                                let leagueRules =
+                                    LeagueRuleVariableCalculator.calculate scoringConfig bridgeSnapshot generatorState
+
+                                generatorState <- evolve scoringConfig bridgeSnapshot generatorState
+                                cache.UpdateLeagueSuccess(bridgeSnapshot, leagueRules)
                                 logger.Debug(
                                     "runtime.league_job.success",
                                     "League cache updated.",

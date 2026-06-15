@@ -102,6 +102,23 @@ and LovenseRuleConfig =
         DurationSec: float
     }
 
+type PositionWeightPairConfig =
+    {
+        Left: float
+        Right: float
+    }
+
+type PositionWeightTableConfig =
+    {
+        Center: PositionWeightPairConfig
+        TopLeft: PositionWeightPairConfig
+        TopRight: PositionWeightPairConfig
+        BottomLeft: PositionWeightPairConfig
+        BottomRight: PositionWeightPairConfig
+        Left: PositionWeightPairConfig
+        Right: PositionWeightPairConfig
+    }
+
 type RuntimeConfig =
     {
         PollMs: int
@@ -193,6 +210,7 @@ type PositionBasedRotationConfig =
         RotationSensitivity: float
         TemplateImagePath: string option
         DebugMode: bool
+        PositionWeights: PositionWeightTableConfig
     }
 
 type AppConfig =

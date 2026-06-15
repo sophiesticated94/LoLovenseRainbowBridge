@@ -280,6 +280,18 @@ module Validation =
         if config.PositionBasedRotation.RotationSensitivity < 0.0 || config.PositionBasedRotation.RotationSensitivity > 2.0 then
             invalidArg "PositionBasedRotation.RotationSensitivity" "PositionBasedRotation.RotationSensitivity must be in range 0.0..2.0."
 
+        let validateWeightPair key (pair: PositionWeightPairConfig) =
+            if pair.Left < 0.0 || pair.Right < 0.0 then
+                invalidArg key $"{key} weights must be zero or greater."
+
+        validateWeightPair "PositionBasedRotation.PositionWeights.Center" config.PositionBasedRotation.PositionWeights.Center
+        validateWeightPair "PositionBasedRotation.PositionWeights.TopLeft" config.PositionBasedRotation.PositionWeights.TopLeft
+        validateWeightPair "PositionBasedRotation.PositionWeights.TopRight" config.PositionBasedRotation.PositionWeights.TopRight
+        validateWeightPair "PositionBasedRotation.PositionWeights.BottomLeft" config.PositionBasedRotation.PositionWeights.BottomLeft
+        validateWeightPair "PositionBasedRotation.PositionWeights.BottomRight" config.PositionBasedRotation.PositionWeights.BottomRight
+        validateWeightPair "PositionBasedRotation.PositionWeights.Left" config.PositionBasedRotation.PositionWeights.Left
+        validateWeightPair "PositionBasedRotation.PositionWeights.Right" config.PositionBasedRotation.PositionWeights.Right
+
         let allowedLogLevels = set [ "TRACE"; "DEBUG"; "INFO"; "WARN"; "ERROR" ]
 
         if not (allowedLogLevels.Contains(config.Logging.TrackLogLevel.ToUpperInvariant())) then

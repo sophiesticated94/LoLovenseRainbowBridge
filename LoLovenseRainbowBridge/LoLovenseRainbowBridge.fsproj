@@ -76,6 +76,7 @@
     <Compile Include="PositionMapping\PositionMapping.fs" />
 
     <Compile Include="App\RuntimeState.fs" />
+    <Compile Include="App\LeagueRuleVariableCalculator.fs" />
     <Compile Include="App\Orchestrator.fs" />
     <Compile Include="App\Jobs\LeagueJob.fs" />
     <Compile Include="App\Jobs\OcrJob.fs" />

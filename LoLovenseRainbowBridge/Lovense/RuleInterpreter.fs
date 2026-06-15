@@ -8,8 +8,6 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
     let triggerMatches input variables trigger =
         match trigger |> Option.ofObj |> Option.defaultValue "" with
         | value when String.IsNullOrWhiteSpace value -> true
-        | value when String.Equals(value, "ActiveDeath", StringComparison.OrdinalIgnoreCase) ->
-            RuleInternals.hasNewActiveDeath input.PreviousState input.Snapshot
         | value ->
             RuleInternals.boolVariable variables value
 
@@ -17,14 +15,9 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
         if String.IsNullOrWhiteSpace conditionValue then
             true
         else
-            match input.Position with
-            | Some position when String.Equals(position.Quadrant, conditionValue, StringComparison.OrdinalIgnoreCase)
-                                 || String.Equals(position.Zone, conditionValue, StringComparison.OrdinalIgnoreCase) ->
-                true
-            | _ ->
-                match evaluator.Evaluate conditionValue variables with
-                | Ok value -> value <> 0.0
-                | Error _ -> false
+            match evaluator.Evaluate conditionValue variables with
+            | Ok value -> value <> 0.0
+            | Error _ -> false
 
     let ruleTargetName (rule: LovenseRuleConfig) =
         if String.Equals(rule.Layer, "State", StringComparison.OrdinalIgnoreCase) then
@@ -141,7 +134,11 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
                  variables: Map<string, float>)
                 (rule: LovenseRuleConfig)
                 =
-                let variables = inputBuilder.Build state input layers
+                let projectedVariables = inputBuilder.Build state input layers
+                let variables =
+                    RuleInternals.mergeVariables
+                        projectedVariables
+                        (RuleInternals.evaluationVariables layers input.LastSentFunctionState)
 
                 if not (triggerMatches input variables rule.Trigger) then
                     layers, state, diagnostics, traces, variables
@@ -164,10 +161,18 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
                             | Ok value ->
                                 layers, applyStateTarget rule value state, diagnostics, traces, variables
                     | _ ->
-                        targetFunctions rule
-                        |> List.fold (fun (layers, state, diagnostics: LovenseRuleDiagnostic list, traces: LovenseRuleEvaluationTrace list, _) fn ->
+                        let folder
+                            (layers: Map<LovenseActionFunction, LovenseFunctionLayers>,
+                             state: LovenseCommandBuilderState,
+                             diagnostics: LovenseRuleDiagnostic list,
+                             traces: LovenseRuleEvaluationTrace list,
+                             _)
+                            fn =
+                            let projectedVariables = inputBuilder.Build state input layers
                             let variables =
-                                inputBuilder.Build state input layers
+                                RuleInternals.mergeVariables
+                                    projectedVariables
+                                    (RuleInternals.evaluationVariables layers input.LastSentFunctionState)
                                 |> targetScopedVariables fn
 
                             if not (conditionMatches input variables rule.Condition) then
@@ -188,8 +193,9 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
                                     let minValue = variables |> Map.tryFind "MinValue" |> Option.defaultValue 0.0
                                     let maxValue = variables |> Map.tryFind "MaxValue" |> Option.defaultValue 0.0
                                     let trace = evaluationTrace rule fn value minValue maxValue before after
-                                    nextLayers, state, diagnostics, trace :: traces, variables)
-                            (layers, state, diagnostics, traces, variables)
+                                    nextLayers, state, diagnostics, trace :: traces, variables
+
+                        targetFunctions rule |> List.fold folder (layers, state, diagnostics, traces, variables)
 
             enabled
             |> List.fold folder (Map.empty, state, ([]: LovenseRuleDiagnostic list), ([]: LovenseRuleEvaluationTrace list), Map.empty)
