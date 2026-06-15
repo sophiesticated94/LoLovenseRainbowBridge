@@ -86,67 +86,77 @@ type LovenseRuleJob
                             |}
                         )
 
-                        let outgoingPlan = commandFrame.Plan
-                        let outgoingActionString = commandFrame.ActionString
+                        let outgoingPlan = commandFrame.ChangedPlan
+                        let outgoingActionString = commandFrame.ChangedActionString
 
-                        let! result = lovenseClient.SendCommandPlanAsync(outgoingPlan, commandFrame.Breakdown.Intensity, commandFrame.RuleTraces, ct)
+                        match outgoingPlan, outgoingActionString with
+                        | Some outgoingPlan, Some outgoingActionString ->
+                            let! result = lovenseClient.SendCommandPlanAsync(outgoingPlan, commandFrame.Breakdown.Intensity, commandFrame.RuleTraces, ct)
 
-                        match result with
-                        | Ok result ->
-                            lastSentFunctionState <- commandFrame.FullFunctionState
-                            cache.UpdateLovenseSuccess result.SocketConnected
-                            cache.UpdateLovenseCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Success")
+                            match result with
+                            | Ok result ->
+                                lastSentFunctionState <- commandFrame.FullFunctionState
+                                cache.UpdateLovenseSuccess result.SocketConnected
+                                cache.UpdateLovenseCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Success")
 
-                            cacheSnapshot.League.Snapshot
-                            |> Option.iter (fun snapshot ->
-                                recorder
-                                |> Option.iter (fun recorder ->
-                                    recorder.RecordPlan(
-                                        now,
-                                        recordingConfigSummary,
-                                        snapshot,
-                                        commandFrame.Breakdown,
-                                        outgoingPlan,
-                                        outgoingActionString,
-                                        { Attempted = true; Success = Some true; Error = None }
-                                    )))
+                                cacheSnapshot.League.Snapshot
+                                |> Option.iter (fun snapshot ->
+                                    recorder
+                                    |> Option.iter (fun recorder ->
+                                        recorder.RecordPlan(
+                                            now,
+                                            recordingConfigSummary,
+                                            snapshot,
+                                            commandFrame.Breakdown,
+                                            outgoingPlan,
+                                            outgoingActionString,
+                                            { Attempted = true; Success = Some true; Error = None }
+                                        )))
 
-                            logger.Info(
-                                "runtime.lovense_job.send_success",
-                                "Lovense command sent successfully.",
-                                {| changedAction = outgoingActionString; changedFunctionState = commandFrame.ChangedFunctionState; fullAction = commandFrame.ActionString |}
+                                logger.Info(
+                                    "runtime.lovense_job.send_success",
+                                    "Lovense command sent successfully.",
+                                    {| changedAction = outgoingActionString; changedFunctionState = commandFrame.ChangedFunctionState; fullAction = commandFrame.ActionString |}
+                                )
+                                printStatus activeSnapshot commandFrame.Breakdown outgoingActionString
+                                do! Task.Delay(runtimeConfig.LovensePollMs, ct)
+
+                            | Error error ->
+                                cache.UpdateLovenseFailure(RuntimeState.lovenseErrorMessage error)
+                                cache.UpdateLovenseCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Retrying")
+
+                                cacheSnapshot.League.Snapshot
+                                |> Option.iter (fun snapshot ->
+                                    recorder
+                                    |> Option.iter (fun recorder ->
+                                        recorder.RecordPlan(
+                                            now,
+                                            recordingConfigSummary,
+                                            snapshot,
+                                            commandFrame.Breakdown,
+                                            outgoingPlan,
+                                            outgoingActionString,
+                                            { Attempted = true; Success = Some false; Error = Some(RuntimeState.lovenseErrorMessage error) }
+                                        )))
+
+                                logger.Error(
+                                    "runtime.lovense_job.send_failed",
+                                    "Lovense command failed.",
+                                    {| 
+                                        error = RuntimeState.lovenseErrorSummary error
+                                        changedAction = outgoingActionString
+                                        changedFunctionState = commandFrame.ChangedFunctionState
+                                    |}
+                                )
+                                do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
+                        | _ ->
+                            logger.Debug(
+                                "runtime.lovense_job.no_function_changes",
+                                "Lovense command frame did not change, so nothing was emitted.",
+                                {| fullAction = commandFrame.ActionString; fullFunctionState = commandFrame.FullFunctionState |}
                             )
-                            printStatus activeSnapshot commandFrame.Breakdown outgoingActionString
+                            cache.UpdateLovenseCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "NoChange")
                             do! Task.Delay(runtimeConfig.LovensePollMs, ct)
-
-                        | Error error ->
-                            cache.UpdateLovenseFailure(RuntimeState.lovenseErrorMessage error)
-                            cache.UpdateLovenseCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Retrying")
-
-                            cacheSnapshot.League.Snapshot
-                            |> Option.iter (fun snapshot ->
-                                recorder
-                                |> Option.iter (fun recorder ->
-                                    recorder.RecordPlan(
-                                        now,
-                                        recordingConfigSummary,
-                                        snapshot,
-                                        commandFrame.Breakdown,
-                                        outgoingPlan,
-                                        outgoingActionString,
-                                        { Attempted = true; Success = Some false; Error = Some(RuntimeState.lovenseErrorMessage error) }
-                                    )))
-
-                            logger.Error(
-                                "runtime.lovense_job.send_failed",
-                                "Lovense command failed.",
-                                {| 
-                                    error = RuntimeState.lovenseErrorSummary error
-                                    changedAction = outgoingActionString
-                                    changedFunctionState = commandFrame.ChangedFunctionState
-                                |}
-                            )
-                            do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
 
                     with
                     | :? OperationCanceledException -> ()

@@ -50,6 +50,22 @@ type ToyCacheJob
                 }
         | _ -> None
 
+    let chooseGetToysEndpoint now (toyState: RuntimeState.ToyCacheState) endpoints =
+        let preferredValid =
+            match toyState.PreferredGetToysEndpoint, toyState.PreferredGetToysEndpointExpiresAt with
+            | Some endpoint, Some expiresAt when expiresAt > now && endpoints |> List.exists (fun candidate -> String.Equals(candidate, endpoint, StringComparison.OrdinalIgnoreCase)) ->
+                Some endpoint
+            | _ -> None
+
+        match preferredValid with
+        | Some endpoint -> Some endpoint
+        | None ->
+            endpoints
+            |> List.tryFind (fun endpoint ->
+                toyState.LastFailedGetToysEndpoint
+                |> Option.forall (fun failed -> not (String.Equals(failed, endpoint, StringComparison.OrdinalIgnoreCase))))
+            |> Option.orElse (List.tryHead endpoints)
+
     interface IAppJob with
         member _.Name = "ToyCacheJob"
 
@@ -86,43 +102,60 @@ type ToyCacheJob
                                 cache.UpdateToyCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Waiting")
                                 do! Task.Delay(TimeSpan.FromSeconds(float lovenseConfig.LocalApi.CapabilityRefreshIntervalSec), ct)
                             | Some deviceInfo ->
-                                let! result = LocalApi.getToysAsync http logger lovenseConfig.LocalApi deviceInfo ct
+                                let now = DateTimeOffset.UtcNow
+                                let toyState = cache.Read().Toys
+                                let endpoints = LocalApi.getToysEndpointUrls lovenseConfig.LocalApi (Some deviceInfo)
 
-                                match result with
-                                | Ok refreshed ->
-                                    let merged =
-                                        ClientState.mergeDeviceInfo (cache.Read().Toys.DeviceInfo) refreshed
+                                let endpointToUse =
+                                    chooseGetToysEndpoint now toyState endpoints
 
-                                    lovenseClient.ApplyDeviceInfo merged
-                                    cache.UpdateToySuccess merged
-
-                                    let toyState = cache.Read().Toys
-
-                                    logger.Info(
-                                        "runtime.toy_job.success",
-                                        "Toy cache refreshed from Lovense Local API.",
-                                        {| toyCount = merged.ToyList.Length; version = toyState.Version; failureAttemptsSinceSuccess = toyState.FailureAttemptsSinceSuccess |}
+                                match endpointToUse with
+                                | None ->
+                                    logger.Debug(
+                                        "runtime.toy_job.no_endpoint",
+                                        "Toy cache job could not choose a Lovense GetToys endpoint from the available candidates.",
+                                        {| candidateEndpoints = endpoints |}
                                     )
-                                    cache.UpdateToyCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Success")
-
+                                    cache.UpdateToyCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Waiting")
                                     do! Task.Delay(TimeSpan.FromSeconds(float lovenseConfig.LocalApi.CapabilityRefreshIntervalSec), ct)
+                                | Some endpointUrl ->
+                                    let! result = LocalApi.getToysAsync http logger lovenseConfig.LocalApi deviceInfo endpointUrl ct
 
-                                | Error error ->
-                                    cache.UpdateToyFailure(string error)
-                                    let toyState = cache.Read().Toys
+                                    match result with
+                                    | Ok refreshed ->
+                                        let merged =
+                                            ClientState.mergeDeviceInfo (cache.Read().Toys.DeviceInfo) refreshed
 
-                                    logger.Warn(
-                                        "runtime.toy_job.failure",
-                                        "Toy cache refresh failed; keeping last known good toy capabilities.",
-                                        {| error = string error; attemptSinceLastSuccess = toyState.FailureAttemptsSinceSuccess |}
-                                    )
-                                    cache.UpdateToyCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Retrying")
+                                        lovenseClient.ApplyDeviceInfo merged
+                                        cache.UpdateToySuccess(merged, Some endpointUrl, Some(now.AddSeconds(float lovenseConfig.LocalApi.CapabilityRefreshIntervalSec)))
 
-                                    do! Task.Delay(TimeSpan.FromSeconds(float lovenseConfig.LocalApi.CapabilityRefreshIntervalSec), ct)
+                                        let toyState = cache.Read().Toys
+
+                                        logger.Info(
+                                            "runtime.toy_job.success",
+                                            "Toy cache refreshed from Lovense Local API.",
+                                            {| toyCount = merged.ToyList.Length; version = toyState.Version; failureAttemptsSinceSuccess = toyState.FailureAttemptsSinceSuccess; endpoint = endpointUrl; endpointExpiresAt = now.AddSeconds(float lovenseConfig.LocalApi.CapabilityRefreshIntervalSec) |}
+                                        )
+                                        cache.UpdateToyCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Success")
+
+                                        do! Task.Delay(TimeSpan.FromSeconds(float lovenseConfig.LocalApi.CapabilityRefreshIntervalSec), ct)
+
+                                    | Error error ->
+                                        cache.UpdateToyFailure(string error, Some endpointUrl)
+                                        let toyState = cache.Read().Toys
+
+                                        logger.Warn(
+                                            "runtime.toy_job.failure",
+                                            "Toy cache refresh failed; keeping last known good toy capabilities.",
+                                            {| error = string error; attemptSinceLastSuccess = toyState.FailureAttemptsSinceSuccess; endpoint = endpointUrl |}
+                                        )
+                                        cache.UpdateToyCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Retrying")
+
+                                        do! Task.Delay(TimeSpan.FromSeconds(float lovenseConfig.LocalApi.CapabilityRefreshIntervalSec), ct)
                     with
                     | :? OperationCanceledException -> ()
                     | ex ->
-                        cache.UpdateToyFailure ex.Message
+                        cache.UpdateToyFailure(ex.Message, None)
                         cache.UpdateToyCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Error")
                         logger.Error(
                             "runtime.toy_job.error",

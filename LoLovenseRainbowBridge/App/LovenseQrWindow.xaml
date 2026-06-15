@@ -1,13 +1,6 @@
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="LoLovenseRainbowBridge QR"
-        Width="620"
-        Height="840"
-        MinWidth="520"
-        MinHeight="680"
-        WindowStartupLocation="CenterScreen"
-        Topmost="True"
-        Background="White">
+<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="White">
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Margin="24">
             <TextBlock x:Name="CodeText"
@@ -40,4 +33,4 @@
                        TextWrapping="Wrap" />
         </StackPanel>
     </ScrollViewer>
-</Window>
+</UserControl>

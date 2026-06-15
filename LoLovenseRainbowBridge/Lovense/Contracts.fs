@@ -136,6 +136,14 @@ type LovenseDeviceInfo =
         WssPort: int option
     }
 
+type LovenseEndpointSelection =
+    {
+        Url: string option
+        ExpiresAt: DateTimeOffset option
+        LastFailedUrl: string option
+        LastSelectedAt: DateTimeOffset option
+    }
+
 type LovenseQrCodeSnapshot =
     {
         Qr: string
@@ -146,6 +154,12 @@ type LovenseQrCodeSnapshot =
 type LovenseSessionSnapshot =
     {
         SocketInfo: SocketUrlInfo option
+        SocketConnected: bool
+        SocketReadyAt: DateTimeOffset option
+        LastConnectAttemptAt: DateTimeOffset option
+        NextConnectRetryAt: DateTimeOffset option
+        LocalCommandCooldownUntil: DateTimeOffset option
+        ServerCommandCooldownUntil: DateTimeOffset option
         StandardQrCode: LovenseQrCodeSnapshot option
         QrCodeLogged: bool
         SupportedFunctions: Set<string> option

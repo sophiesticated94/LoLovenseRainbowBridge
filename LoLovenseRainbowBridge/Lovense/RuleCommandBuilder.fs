@@ -145,7 +145,7 @@ type LovenseCommandValueBuilder(config: LovenseConfig, interpreter: ILovenseRule
                 {
                     Actions = actions
                     Reasons = reasonsFromLayers functionStates diagnostics
-                    TimeSec = config.CommandTimeSec
+                    TimeSec = 0.0
                     StopPrevious = config.Mapping.DefaultStopPrevious
                     ToyId = config.ToyId
                 }
@@ -157,7 +157,7 @@ type LovenseCommandValueBuilder(config: LovenseConfig, interpreter: ILovenseRule
                 LovenseActionCodec.planFromStateDiff
                     config
                     (reasonsFromLayers functionStates diagnostics)
-                    config.CommandTimeSec
+                    0.0
                     config.Mapping.DefaultStopPrevious
                     config.ToyId
                     diff

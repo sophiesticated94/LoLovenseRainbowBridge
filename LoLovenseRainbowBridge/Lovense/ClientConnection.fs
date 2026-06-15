@@ -142,28 +142,44 @@ module ClientConnection =
                     try
                         let connectOnce forceAuthRefresh forceSocketUrlRefresh currentSession =
                             task {
+                                let startedAt = DateTimeOffset.UtcNow
+                                let currentSession = { currentSession with LastConnectAttemptAt = Some startedAt }
                                 let! (authTokenResult, updatedSession1) = resolveAuthTokenAsync http logger config currentSession forceAuthRefresh ct
 
                                 match authTokenResult with
                                 | Error error ->
-                                    return (Error error, updatedSession1)
+                                    let retryAt = Some(startedAt.AddMilliseconds(float config.ConnectTimeoutMs))
+                                    let updatedSession = { updatedSession1 with SocketConnected = false; NextConnectRetryAt = retryAt }
+                                    return (Error error, updatedSession)
 
                                 | Ok authToken ->
                                     let! (socketUrlResult, updatedSession2) = resolveSocketUrlAsync http logger config updatedSession1 authToken forceSocketUrlRefresh ct
 
                                     match socketUrlResult with
                                     | Error error ->
-                                        return (Error error, updatedSession2)
+                                        let retryAt = Some(startedAt.AddMilliseconds(float config.ConnectTimeoutMs))
+                                        let updatedSession = { updatedSession2 with SocketConnected = false; NextConnectRetryAt = retryAt }
+                                        return (Error error, updatedSession)
 
                                     | Ok info ->
                                         let! connectedResult = SocketRuntime.connectAsync config logger onDeviceInfo onQrCode info ct
 
                                         match connectedResult with
                                         | Ok (client, state) ->
-                                            let finalSession = { updatedSession2 with Socket = Some client }
+                                            let finalSession =
+                                                {
+                                                    updatedSession2 with
+                                                        Socket = Some client
+                                                        SocketConnected = true
+                                                        SocketReadyAt = Some DateTimeOffset.UtcNow
+                                                        LastConnectAttemptAt = Some startedAt
+                                                        NextConnectRetryAt = None
+                                                }
                                             return (Ok state, finalSession)
                                         | Error error ->
-                                            return (Error error, updatedSession2)
+                                            let retryAt = Some(startedAt.AddMilliseconds(float config.ConnectTimeoutMs))
+                                            let updatedSession = { updatedSession2 with SocketConnected = false; NextConnectRetryAt = retryAt }
+                                            return (Error error, updatedSession)
                             }
 
                         match session.Socket with

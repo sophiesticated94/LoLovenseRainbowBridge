@@ -24,6 +24,7 @@ type internal LovenseQrWindow() as this =
     let imageGate = obj()
     let mutable imageLoadVersion = 0L
     let mutable imageLoadCancellation: CancellationTokenSource option = None
+    let mutable lastQrUrl: string option = None
 
     let loadView () =
         let xamlPath = Path.Combine(AppContext.BaseDirectory, "App", "LovenseQrWindow.xaml")
@@ -69,61 +70,64 @@ type internal LovenseQrWindow() as this =
             this.Dispatcher.BeginInvoke(Action(fun () -> qrImage.Source <- defaultArg source null)) |> ignore
 
     let updateImage (qrUrl: string) =
-        let version, cts = cancelInFlightImageLoad ()
-
-        try
-            if String.IsNullOrWhiteSpace qrUrl then
-                setImageSource None
-            elif qrUrl.StartsWith("data:image", StringComparison.OrdinalIgnoreCase) then
-                let commaIndex = qrUrl.IndexOf(',')
-
-                if commaIndex > 0 then
-                    let base64 = qrUrl.Substring(commaIndex + 1)
-                    let bytes = Convert.FromBase64String(base64)
-                    setImageSource (Some(loadBitmapFromBytes bytes))
+        let shouldReload =
+            lock imageGate (fun () ->
+                if String.IsNullOrWhiteSpace qrUrl then
+                    false
                 else
-                    setImageSource None
-            elif Uri.IsWellFormedUriString(qrUrl, UriKind.Absolute) then
-                setImageSource None
+                    match lastQrUrl with
+                    | Some existing when String.Equals(existing, qrUrl, StringComparison.Ordinal) -> false
+                    | _ ->
+                        lastQrUrl <- Some qrUrl
+                        true)
 
-                Task.Run(
-                    Func<Task>(fun () ->
-                        task {
-                            try
-                                use http = Shared.insecureHttpClient ()
-                                use! response = http.GetAsync(qrUrl, cts.Token)
-                                response.EnsureSuccessStatusCode() |> ignore
-                                let! bytes = response.Content.ReadAsByteArrayAsync(cts.Token)
+        if shouldReload then
+            let version, cts = cancelInFlightImageLoad ()
 
-                                if not cts.IsCancellationRequested then
-                                    let image = loadBitmapFromBytes bytes
+            try
+                if qrUrl.StartsWith("data:image", StringComparison.OrdinalIgnoreCase) then
+                    let commaIndex = qrUrl.IndexOf(',')
 
-                                    if lock imageGate (fun () -> imageLoadVersion = version) then
-                                        setImageSource (Some image)
-                            with
-                            | :? OperationCanceledException -> ()
-                            | _ ->
-                                if lock imageGate (fun () -> imageLoadVersion = version) then
-                                    setImageSource None
-                        }
+                    if commaIndex > 0 then
+                        let base64 = qrUrl.Substring(commaIndex + 1)
+                        let bytes = Convert.FromBase64String(base64)
+                        setImageSource (Some(loadBitmapFromBytes bytes))
+                elif Uri.IsWellFormedUriString(qrUrl, UriKind.Absolute) then
+                    Task.Run(
+                        Func<Task>(fun () ->
+                            task {
+                                try
+                                    use http = Shared.insecureHttpClient ()
+                                    use! response = http.GetAsync(qrUrl, cts.Token)
+                                    response.EnsureSuccessStatusCode() |> ignore
+                                    let! bytes = response.Content.ReadAsByteArrayAsync(cts.Token)
+
+                                    if not cts.IsCancellationRequested then
+                                        let image = loadBitmapFromBytes bytes
+
+                                        if lock imageGate (fun () -> imageLoadVersion = version) then
+                                            setImageSource (Some image)
+                                with
+                                | :? OperationCanceledException -> ()
+                                | _ ->
+                                    ()
+                            }
+                        )
                     )
-                )
-                |> ignore
-            elif File.Exists(qrUrl) then
-                use stream = File.OpenRead(qrUrl)
-                let frame =
-                    BitmapFrame.Create(
-                        stream,
-                        BitmapCreateOptions.PreservePixelFormat ||| BitmapCreateOptions.IgnoreImageCache,
-                        BitmapCacheOption.OnLoad
-                    )
+                    |> ignore
+                elif File.Exists(qrUrl) then
+                    use stream = File.OpenRead(qrUrl)
+                    let frame =
+                        BitmapFrame.Create(
+                            stream,
+                            BitmapCreateOptions.PreservePixelFormat ||| BitmapCreateOptions.IgnoreImageCache,
+                            BitmapCacheOption.OnLoad
+                        )
 
-                frame.Freeze()
-                setImageSource (Some(frame :> ImageSource))
-            else
-                setImageSource None
-        with _ ->
-            setImageSource None
+                    frame.Freeze()
+                    setImageSource (Some(frame :> ImageSource))
+            with _ ->
+                ()
 
     let formatDuration = function
         | None -> "N/A"
@@ -141,7 +145,6 @@ type internal LovenseQrWindow() as this =
         | None ->
             codeText.Text <- "Waiting for Lovense QR..."
             statusText.Text <- "Open Lovense Standard API pairing. The code will appear here when available."
-            qrImage.Source <- null
 
         let jobs =
             [

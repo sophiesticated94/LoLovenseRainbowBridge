@@ -245,6 +245,9 @@ module RuntimeState =
     type ToyCacheState =
         {
             DeviceInfo: LovenseDeviceInfo option
+            PreferredGetToysEndpoint: string option
+            PreferredGetToysEndpointExpiresAt: DateTimeOffset option
+            LastFailedGetToysEndpoint: string option
             DataAcquired: bool
             FailureAttemptsSinceSuccess: int
             LastSuccessfulAt: DateTimeOffset option
@@ -399,6 +402,12 @@ module RuntimeState =
     let private initialLovenseSession =
         {
             SocketInfo = None
+            SocketConnected = false
+            SocketReadyAt = None
+            LastConnectAttemptAt = None
+            NextConnectRetryAt = None
+            LocalCommandCooldownUntil = None
+            ServerCommandCooldownUntil = None
             StandardQrCode = None
             QrCodeLogged = false
             SupportedFunctions = None
@@ -429,6 +438,9 @@ module RuntimeState =
     let private initialToys =
         {
             DeviceInfo = None
+            PreferredGetToysEndpoint = None
+            PreferredGetToysEndpointExpiresAt = None
+            LastFailedGetToysEndpoint = None
             DataAcquired = false
             FailureAttemptsSinceSuccess = 0
             LastSuccessfulAt = None
@@ -874,7 +886,7 @@ module RuntimeState =
                     }
                 snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
-        member _.UpdateToySuccess(deviceInfo: LovenseDeviceInfo) =
+        member _.UpdateToySuccess(deviceInfo: LovenseDeviceInfo, preferredGetToysEndpoint: string option, preferredGetToysEndpointExpiresAt: DateTimeOffset option) =
             lock gate (fun () ->
                 let now = DateTimeOffset.UtcNow
                 snapshot <-
@@ -884,6 +896,9 @@ module RuntimeState =
                                 {
                                     snapshot.Toys with
                                         DeviceInfo = Some deviceInfo
+                                        PreferredGetToysEndpoint = preferredGetToysEndpoint
+                                        PreferredGetToysEndpointExpiresAt = preferredGetToysEndpointExpiresAt
+                                        LastFailedGetToysEndpoint = None
                                         DataAcquired = true
                                         FailureAttemptsSinceSuccess = 0
                                         LastSuccessfulAt = Some now
@@ -894,7 +909,7 @@ module RuntimeState =
                     }
                 snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
-        member _.UpdateToyFailure(error: string) =
+        member _.UpdateToyFailure(error: string, failedEndpoint: string option) =
             lock gate (fun () ->
                 let now = DateTimeOffset.UtcNow
                 snapshot <-
@@ -903,6 +918,9 @@ module RuntimeState =
                             Toys =
                                 {
                                     snapshot.Toys with
+                                        PreferredGetToysEndpoint = None
+                                        PreferredGetToysEndpointExpiresAt = None
+                                        LastFailedGetToysEndpoint = failedEndpoint |> Option.orElse snapshot.Toys.LastFailedGetToysEndpoint
                                         DataAcquired = false
                                         FailureAttemptsSinceSuccess = snapshot.Toys.FailureAttemptsSinceSuccess + 1
                                         UnavailableSince = snapshot.Toys.UnavailableSince |> Option.orElse (Some now)
@@ -921,6 +939,8 @@ module RuntimeState =
                             Toys =
                                 {
                                     snapshot.Toys with
+                                        PreferredGetToysEndpoint = None
+                                        PreferredGetToysEndpointExpiresAt = None
                                         DataAcquired = false
                                         UnavailableSince = snapshot.Toys.UnavailableSince |> Option.orElse (Some now)
                                         LastError = Some "Lovense toy cache refresh is disabled."

@@ -14,6 +14,12 @@ type LovenseSessionState =
     {
         Socket: SocketIO option
         SocketInfo: CachedSessionValue<SocketUrlInfo> option
+        SocketConnected: bool
+        SocketReadyAt: DateTimeOffset option
+        LastConnectAttemptAt: DateTimeOffset option
+        NextConnectRetryAt: DateTimeOffset option
+        LocalCommandCooldownUntil: DateTimeOffset option
+        ServerCommandCooldownUntil: DateTimeOffset option
         StandardQrCode: CachedSessionValue<StandardApiQrCodeInfo> option
         QrCodeLogged: bool
         SupportedFunctions: Set<string> option
@@ -130,6 +136,7 @@ module ClientState =
 
         {
             session with
+                SocketConnected = false
                 SocketInfo = None
         }
 
@@ -142,6 +149,7 @@ module ClientState =
 
         {
             session with
+                SocketConnected = false
                 GeneratedAuthToken = None
                 SocketInfo = None
         }

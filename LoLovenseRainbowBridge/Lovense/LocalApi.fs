@@ -14,6 +14,10 @@ module LocalApi =
     let private commandUrl scheme domain port =
         $"{scheme}://{domain}:{port}{Constants.Lovense.LocalCommandPath}"
 
+    let private endpointUrls endpoints =
+        endpoints
+        |> List.map (fun (scheme, domain, port) -> commandUrl scheme domain port)
+
     let private httpsDomain (domain: string) =
         match IPAddress.TryParse domain with
         | true, address when address.AddressFamily = Sockets.AddressFamily.InterNetwork ->
@@ -42,6 +46,9 @@ module LocalApi =
                 | Some port -> "http", httpDomain domain, port
                 | None -> ()
             ]
+
+    let getToysEndpointUrls (config: LovenseLocalApiConfig) (deviceInfo: LovenseDeviceInfo option) =
+        commandEndpoints config deviceInfo |> endpointUrls
 
     let private commandPayload (plan: LovenseCommandPlan) actionString =
         let toyPart =
@@ -78,84 +85,59 @@ module LocalApi =
         (logger: StructuredSessionLogger)
         (config: LovenseLocalApiConfig)
         (deviceInfo: LovenseDeviceInfo)
+        (endpointUrl: string)
         (ct: CancellationToken)
         =
         task {
-            let endpoints = commandEndpoints config (Some deviceInfo)
-
-            match endpoints with
-            | endpoints when config.EnableGetToys && not endpoints.IsEmpty ->
+            if not config.EnableGetToys then
+                return Error(SocketUrlRequestFailed(Constants.Lovense.LocalCommandPath, "Local API GetToys is disabled."))
+            else
                 let correlationId = Transport.newCorrelationId()
 
                 logger.Info(
                     "lovense.local_get_toys.start",
                     "Requesting Lovense toy list from Local API for capability enrichment.",
-                    {|
-                        correlationId = correlationId
-                        endpoints = endpoints |> List.map (fun (scheme, domain, port) -> commandUrl scheme domain port)
-                        allowSelfSignedCertificate = config.AllowSelfSignedCertificate
-                    |}
+                    {| correlationId = correlationId; endpoint = endpointUrl; allowSelfSignedCertificate = config.AllowSelfSignedCertificate |}
                 )
 
-                let mutable response = None
-                let mutable lastError = None
+                use timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct)
+                timeoutCts.CancelAfter(config.TimeoutMs)
 
-                for scheme, domain, port in endpoints do
-                    if response.IsNone then
-                        let url = commandUrl scheme domain port
-                        use timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct)
-                        timeoutCts.CancelAfter(config.TimeoutMs)
+                let! endpointResponse =
+                    task {
+                        try
+                            return!
+                                Transport.postJsonWithHeadersAsync
+                                    http
+                                    logger
+                                    correlationId
+                                    endpointUrl
+                                    [ Constants.Lovense.PlatformHeader, config.HeaderPlatform ]
+                                    getToysBody
+                                    getToysBody
+                                    timeoutCts.Token
+                        with
+                        | :? OperationCanceledException when not ct.IsCancellationRequested ->
+                            return Error(SocketUrlRequestFailed(endpointUrl, $"Lovense Local API GetToys timed out after {config.TimeoutMs}ms."))
+                    }
 
-                        let! endpointResponse =
-                            task {
-                                try
-                                    return!
-                                        Transport.postJsonWithHeadersAsync
-                                            http
-                                            logger
-                                            correlationId
-                                            url
-                                            [ Constants.Lovense.PlatformHeader, config.HeaderPlatform ]
-                                            getToysBody
-                                            getToysBody
-                                            timeoutCts.Token
-                                with
-                                | :? OperationCanceledException when not ct.IsCancellationRequested ->
-                                    return Error(SocketUrlRequestFailed(url, $"Lovense Local API GetToys timed out after {config.TimeoutMs}ms."))
-                            }
-
-                        match endpointResponse with
-                        | Ok endpointResponse ->
-                            response <- Some(Ok(scheme, domain, port, endpointResponse))
-                        | Error error ->
-                            lastError <- Some error
-                            logger.Warn(
-                                "lovense.local_get_toys.endpoint_failure",
-                                "Lovense Local API GetToys endpoint failed; trying the next configured endpoint if available.",
-                                {| correlationId = correlationId; url = url; error = string error |}
-                            )
-
-                let response =
-                    response
-                    |> Option.defaultValue (Error(defaultArg lastError (SocketUrlRequestFailed(Constants.Lovense.LocalCommandPath, "No Lovense Local API endpoint is configured."))))
-
-                match response with
+                match endpointResponse with
                 | Error error ->
                     logger.Warn(
                         "lovense.local_get_toys.failure",
                         "Lovense Local API GetToys failed; keeping socket capabilities.",
-                        {| correlationId = correlationId; error = string error |}
+                        {| correlationId = correlationId; endpoint = endpointUrl; error = string error |}
                     )
                     return Error error
 
-                | Ok(scheme, domain, port, response) ->
+                | Ok response ->
                     match validateLocalApiBody Constants.Lovense.GetToysCommand response.Body with
                     | Error message ->
                         let error = SocketUrlRequestFailed(Constants.Lovense.LocalCommandPath, message)
                         logger.Warn(
                             "lovense.local_get_toys.rejected",
                             "Lovense Local API GetToys returned a non-success Lovense code.",
-                            {| correlationId = correlationId; endpoint = commandUrl scheme domain port; error = message |}
+                            {| correlationId = correlationId; endpoint = endpointUrl; error = message |}
                         )
                         return Error error
                     | Ok() ->
@@ -167,7 +149,7 @@ module LocalApi =
                             {|
                                 correlationId = correlationId
                                 statusCode = response.StatusCode
-                                endpoint = commandUrl scheme domain port
+                                endpoint = endpointUrl
                                 toyCount = parsed.ToyList.Length
                                 functionCount = parsed.SupportedFunctions |> Option.map Set.count |> Option.defaultValue 0
                                 rawLogged = logger.IsRawLovenseEnabled
@@ -175,9 +157,6 @@ module LocalApi =
                         )
 
                         return Ok parsed
-
-            | _ ->
-                return Error(SocketUrlRequestFailed(Constants.Lovense.LocalCommandPath, "Local API GetToys is disabled or socket device info did not include domain/httpsPort."))
         }
 
     let sendCommandAsync

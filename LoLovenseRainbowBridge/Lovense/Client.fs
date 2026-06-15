@@ -2,6 +2,7 @@ namespace LoLovenseRainbowBridge.Lovense
 
 open System
 open System.Threading
+open System.Threading.Tasks
 open LoLovenseRainbowBridge
 open SocketIOClient
 
@@ -11,7 +12,7 @@ type LovenseClient(
     logger: StructuredSessionLogger,
     readSession: unit -> LovenseSessionSnapshot,
     updateSession: (LovenseSessionSnapshot -> LovenseSessionSnapshot) -> unit
-) =
+) as this =
 
     let http = Shared.insecureHttpClient ()
     let localHttp =
@@ -21,11 +22,20 @@ type LovenseClient(
             new System.Net.Http.HttpClient()
 
     let connectGate = new Threading.SemaphoreSlim(1, 1)
+    let warmupGate = obj()
+    let warmupCts = new CancellationTokenSource()
+    let mutable connectionWarmupTask: Task option = None
 
     let mutable session: LovenseSessionState =
         {
             Socket = None
             SocketInfo = None
+            SocketConnected = false
+            SocketReadyAt = None
+            LastConnectAttemptAt = None
+            NextConnectRetryAt = None
+            LocalCommandCooldownUntil = None
+            ServerCommandCooldownUntil = None
             StandardQrCode = None
             QrCodeLogged = false
             SupportedFunctions = None
@@ -38,20 +48,54 @@ type LovenseClient(
 
     let syncLovenseSessionCache (update: LovenseSessionSnapshot -> LovenseSessionSnapshot) = updateSession update
 
-    let handleDeviceInfo (deviceInfo: LovenseDeviceInfo) =
-        session <- ClientState.applyDeviceInfo deviceInfo session
+    let kickOffConnectionWarmup () =
+        lock warmupGate (fun () ->
+            match connectionWarmupTask with
+            | Some task when not task.IsCompleted -> ()
+            | _ ->
+                connectionWarmupTask <-
+                    Some
+                        (Task.Run(
+                            Func<Task>(fun () ->
+                                task {
+                                    try
+                                        let! _ = this.EnsureConnectedAsync(warmupCts.Token)
+                                        return ()
+                                    with
+                                    | :? OperationCanceledException -> ()
+                                    | _ -> ()
+                                }
+                            )
+                        )))
+
+    let syncLovenseSessionCacheFromState () =
+        let socketInfo = session.SocketInfo |> Option.map (fun cached -> cached.Value)
+
         syncLovenseSessionCache (fun (current: LovenseSessionSnapshot) ->
             {
                 current with
+                    SocketInfo = socketInfo
+                    SocketConnected = session.SocketConnected
+                    SocketReadyAt = session.SocketReadyAt
+                    LastConnectAttemptAt = session.LastConnectAttemptAt
+                    NextConnectRetryAt = session.NextConnectRetryAt
+                    LocalCommandCooldownUntil = session.LocalCommandCooldownUntil
+                    ServerCommandCooldownUntil = session.ServerCommandCooldownUntil
+                    StandardQrCode = session.StandardQrCode |> Option.map (fun cached -> cached.Value)
+                    QrCodeLogged = session.QrCodeLogged
                     LatestDeviceInfo = session.LatestDeviceInfo
                     SupportedFunctions = session.SupportedFunctions
                     CapabilityProfiles = session.CapabilityProfiles
             })
 
+    let handleDeviceInfo (deviceInfo: LovenseDeviceInfo) =
+        session <- ClientState.applyDeviceInfo deviceInfo session
+        syncLovenseSessionCacheFromState ()
+
     let handleQrCode () =
         if not session.QrCodeLogged then
             session <- ClientState.onQrCode session
-            syncLovenseSessionCache (fun current -> { current with QrCodeLogged = true })
+            syncLovenseSessionCacheFromState ()
             printfn "Lovense QR code event received. See track.log or lovense.log if raw logging is enabled."
 
     member _.CommandUrl =
@@ -65,31 +109,15 @@ type LovenseClient(
 
     member _.ApplyDeviceInfo(deviceInfo: LovenseDeviceInfo) =
         session <- ClientState.applyDeviceInfo deviceInfo session
-        syncLovenseSessionCache (fun (current: LovenseSessionSnapshot) ->
-            {
-                current with
-                    LatestDeviceInfo = session.LatestDeviceInfo
-                    SupportedFunctions = session.SupportedFunctions
-                    CapabilityProfiles = session.CapabilityProfiles
-            })
+        syncLovenseSessionCacheFromState ()
 
     member _.PrepareStandardApiAsync(ct: CancellationToken) =
         task {
             let! (updatedSession, newCallbackServer) = ClientConnection.ensureStandardApiReadyAsync http logger config session standardCallbackServer handleDeviceInfo ct
             session <- updatedSession
             standardCallbackServer <- newCallbackServer
-            let socketInfo = session.SocketInfo |> Option.map (fun cached -> cached.Value)
-            let standardQrCode = session.StandardQrCode |> Option.map (fun cached -> cached.Value)
-            syncLovenseSessionCache (fun (current: LovenseSessionSnapshot) ->
-                {
-                    current with
-                        StandardQrCode = standardQrCode
-                        QrCodeLogged = session.QrCodeLogged
-                        LatestDeviceInfo = session.LatestDeviceInfo
-                        SupportedFunctions = session.SupportedFunctions
-                        CapabilityProfiles = session.CapabilityProfiles
-                        SocketInfo = socketInfo
-                })
+            syncLovenseSessionCacheFromState ()
+            kickOffConnectionWarmup ()
         }
 
     member _.EnsureConnectedAsync(ct: CancellationToken) =
@@ -97,15 +125,7 @@ type LovenseClient(
             let! (connectionResult, updatedSession, newCallbackServer) = ClientConnection.ensureConnectedAsync http logger config session standardCallbackServer connectGate handleDeviceInfo handleQrCode ct
             session <- updatedSession
             standardCallbackServer <- newCallbackServer
-            let socketInfo = session.SocketInfo |> Option.map (fun cached -> cached.Value)
-            syncLovenseSessionCache (fun (current: LovenseSessionSnapshot) ->
-                {
-                    current with
-                        SocketInfo = socketInfo
-                        LatestDeviceInfo = session.LatestDeviceInfo
-                        SupportedFunctions = session.SupportedFunctions
-                        CapabilityProfiles = session.CapabilityProfiles
-                })
+            syncLovenseSessionCacheFromState ()
             return connectionResult
         }
 
@@ -121,6 +141,7 @@ type LovenseClient(
                     session
                     standardCallbackServer
                     connectGate
+                    kickOffConnectionWarmup
                     handleDeviceInfo
                     handleQrCode
                     plan
@@ -129,15 +150,7 @@ type LovenseClient(
                     ct
             session <- updatedSession
             standardCallbackServer <- newCallbackServer
-            let socketInfo = session.SocketInfo |> Option.map (fun cached -> cached.Value)
-            syncLovenseSessionCache (fun (current: LovenseSessionSnapshot) ->
-                {
-                    current with
-                        SocketInfo = socketInfo
-                        LatestDeviceInfo = session.LatestDeviceInfo
-                        SupportedFunctions = session.SupportedFunctions
-                        CapabilityProfiles = session.CapabilityProfiles
-                })
+            syncLovenseSessionCacheFromState ()
             return commandResult
         }
 
@@ -170,6 +183,8 @@ type LovenseClient(
             | Some client -> client.Dispose()
 
             connectGate.Dispose()
+            warmupCts.Cancel()
+            warmupCts.Dispose()
             http.Dispose()
             localHttp.Dispose()
             standardCallbackServer |> Option.iter (fun server -> server.Stop())

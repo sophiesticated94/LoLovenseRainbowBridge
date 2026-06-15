@@ -17,7 +17,7 @@ module Mapping =
         {
             Actions = [ action Vibrate intensity ]
             Reasons = [ CompatibilityVibrate ]
-            TimeSec = config.CommandTimeSec
+            TimeSec = 0.0
             StopPrevious = config.Mapping.DefaultStopPrevious
             ToyId = config.ToyId
         }
@@ -44,7 +44,7 @@ module Mapping =
         {
             Actions = [ action Vibrate intensity ]
             Reasons = [ SourceNotConnected ]
-            TimeSec = config.CommandTimeSec
+            TimeSec = 0.0
             StopPrevious = config.Mapping.DefaultStopPrevious
             ToyId = config.ToyId
         }

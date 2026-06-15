@@ -428,10 +428,10 @@ let ``lol unavailable plan uses discrete 10 or 15 fallback vibration`` () =
     Assert.Equal(10, Mapping.lolNotRunningIntensity 40000L)
 
 [<Fact>]
-let ``lol unavailable plan uses configured command timing and source reason`` () =
+let ``lol unavailable plan uses durable hold timing and source reason`` () =
     let plan = Mapping.lolNotRunningPlan lovenseConfig 1000L
 
-    Assert.Equal(lovenseConfig.CommandTimeSec, plan.TimeSec)
+    Assert.Equal(0.0, plan.TimeSec)
     Assert.Equal(lovenseConfig.Mapping.DefaultStopPrevious, plan.StopPrevious)
     Assert.Equal(SourceNotConnected, Assert.Single(plan.Reasons))
     Assert.Equal("Vibrate:15", LovenseActionCodec.planActionString plan)
@@ -705,7 +705,7 @@ let ``lovense local get toys client posts command and parses response`` () =
         }
 
     let result =
-        LocalApi.getToysAsync http logger localConfig deviceInfo CancellationToken.None
+        LocalApi.getToysAsync http logger localConfig deviceInfo "https://127-0-0-1.lovense.club:34567/command" CancellationToken.None
         |> fun task -> task.GetAwaiter().GetResult()
 
     match result with
@@ -719,7 +719,7 @@ let ``lovense local get toys client posts command and parses response`` () =
         Assert.True(profile.StereoVibrationSupported)
 
 [<Fact>]
-let ``lovense local get toys falls back from https to http endpoint`` () =
+let ``lovense local get toys uses a single selected endpoint`` () =
     let requestedUrls = ResizeArray<string>()
 
     use handler =
@@ -734,18 +734,11 @@ let ``lovense local get toys falls back from https to http endpoint`` () =
                         else
                             request.Content.ReadAsStringAsync(ct)
 
-                    if String.Equals(request.RequestUri.Scheme, "https", StringComparison.OrdinalIgnoreCase) then
-                        return
-                            new HttpResponseMessage(
-                                HttpStatusCode.BadGateway,
-                                Content = new StringContent("""{"code":500,"message":"https unavailable"}""")
-                            )
-                    else
-                        return
-                            new HttpResponseMessage(
-                                HttpStatusCode.OK,
-                                Content = new StringContent("""{"code":200,"type":"OK","data":{"toys":"{\"toy-a\":{\"id\":\"toy-a\",\"name\":\"Ferri\",\"status\":1,\"battery\":90,\"fullFunctionNames\":[\"Vibrate\"]}}"}}""")
-                            )
+                    return
+                        new HttpResponseMessage(
+                            HttpStatusCode.OK,
+                            Content = new StringContent("""{"code":200,"type":"OK","data":{"toys":"{\"toy-a\":{\"id\":\"toy-a\",\"name\":\"Ferri\",\"status\":1,\"battery\":90,\"fullFunctionNames\":[\"Vibrate\"]}}"}}""")
+                        )
                 } }
 
     use http = new HttpClient(handler)
@@ -775,21 +768,20 @@ let ``lovense local get toys falls back from https to http endpoint`` () =
         }
 
     let result =
-        LocalApi.getToysAsync http logger localConfig deviceInfo CancellationToken.None
+        LocalApi.getToysAsync http logger localConfig deviceInfo "https://192-168-0-110.lovense.club:30010/command" CancellationToken.None
         |> fun task -> task.GetAwaiter().GetResult()
 
     match result with
     | Error error ->
         failwithf "Expected HTTP fallback GetToys to succeed, got %A" error
     | Ok parsed ->
-        Assert.Equal(2, requestedUrls.Count)
+        Assert.Equal(1, requestedUrls.Count)
         Assert.Equal("https://192-168-0-110.lovense.club:30010/command", requestedUrls[0])
-        Assert.Equal("http://192.168.0.110:20010/command", requestedUrls[1])
         let profile = Assert.Single(parsed.CapabilityProfiles)
         Assert.Contains(Constants.Lovense.VibrateAction, profile.SupportedFunctions)
 
 [<Fact>]
-let ``lovense local get toys treats endpoint timeout as fallback error`` () =
+let ``lovense local get toys timeout surfaces the selected endpoint error`` () =
     let requestedUrls = ResizeArray<string>()
 
     use handler =
@@ -798,14 +790,7 @@ let ``lovense local get toys treats endpoint timeout as fallback error`` () =
                 task {
                     requestedUrls.Add(request.RequestUri.ToString())
 
-                    if String.Equals(request.RequestUri.Scheme, "https", StringComparison.OrdinalIgnoreCase) then
-                        return raise (OperationCanceledException())
-                    else
-                        return
-                            new HttpResponseMessage(
-                                HttpStatusCode.OK,
-                                Content = new StringContent("""{"code":200,"type":"OK","data":{"toys":"{\"toy-a\":{\"id\":\"toy-a\",\"name\":\"Ferri\",\"fullFunctionNames\":[\"Vibrate\"]}}"}}""")
-                            )
+                    return raise (OperationCanceledException())
                 } }
 
     use http = new HttpClient(handler)
@@ -835,17 +820,16 @@ let ``lovense local get toys treats endpoint timeout as fallback error`` () =
         }
 
     let result =
-        LocalApi.getToysAsync http logger localConfig deviceInfo CancellationToken.None
+        LocalApi.getToysAsync http logger localConfig deviceInfo "https://192-168-0-110.lovense.club:30010/command" CancellationToken.None
         |> fun task -> task.GetAwaiter().GetResult()
 
     match result with
     | Error error ->
-        failwithf "Expected HTTP fallback after timeout to succeed, got %A" error
+        Assert.Contains("SocketUrlRequestFailed", string error)
+        Assert.Contains("192-168-0-110.lovense.club:30010", string error)
+        Assert.Single(requestedUrls) |> ignore
     | Ok parsed ->
-        Assert.Equal(2, requestedUrls.Count)
-        Assert.Equal("https://192-168-0-110.lovense.club:30010/command", requestedUrls[0])
-        Assert.Equal("http://192.168.0.110:20010/command", requestedUrls[1])
-        Assert.Single(parsed.CapabilityProfiles) |> ignore
+        failwithf "Expected HTTP timeout to fail, got %A" parsed
 
 [<Fact>]
 let ``lovense local command fallback posts final function request`` () =
@@ -896,10 +880,10 @@ let ``lovense local command fallback posts final function request`` () =
         Assert.Equal("GameRender", capturedPlatform)
         Assert.Contains("\"command\":\"Function\"", capturedBody)
         Assert.Contains("\"action\":\"Vibrate:16\"", capturedBody)
-        Assert.Contains("\"timeSec\":2", capturedBody)
+        Assert.Contains("\"timeSec\":0", capturedBody)
 
 [<Fact>]
-let ``lovense auto command falls back instead of cold not connected`` () =
+let ``lovense local command falls back instead of cold not connected`` () =
     let mutable capturedLocalBody = ""
 
     use apiHandler =
@@ -925,7 +909,7 @@ let ``lovense auto command falls back instead of cold not connected`` () =
         {
             lovenseConfig with
                 DryRun = false
-                TransportMode = "Auto"
+                TransportMode = "StandardApiLocal"
                 StandardApi = { lovenseConfig.StandardApi with Enable = false; UseServerCommandFallback = false }
                 LocalApi = { lovenseConfig.LocalApi with EnableGetToys = false; EnableCommandFallback = true }
                 Developer = { Token = None; UserId = None; UserName = None; UserToken = None }
@@ -941,6 +925,12 @@ let ``lovense auto command falls back instead of cold not connected`` () =
             {
                 Socket = None
                 SocketInfo = None
+                SocketConnected = false
+                SocketReadyAt = None
+                LastConnectAttemptAt = None
+                NextConnectRetryAt = None
+                LocalCommandCooldownUntil = None
+                ServerCommandCooldownUntil = None
                 StandardQrCode = None
                 QrCodeLogged = false
                 SupportedFunctions = None
@@ -950,6 +940,7 @@ let ``lovense auto command falls back instead of cold not connected`` () =
             }
             None
             connectGate
+            ignore
             ignore
             ignore
             (Mapping.simpleVibratePlan config 8)
