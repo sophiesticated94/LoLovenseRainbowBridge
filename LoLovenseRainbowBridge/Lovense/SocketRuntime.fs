@@ -220,8 +220,28 @@ module SocketRuntime =
                                  SocketId = if String.IsNullOrWhiteSpace client.Id then None else Some client.Id
                              })
             with
-            | :? OperationCanceledException ->
-                return raise (OperationCanceledException())
+            | :? TaskCanceledException as ex ->
+                if ct.IsCancellationRequested then
+                    return raise (OperationCanceledException())
+                else
+                    logger.Warn(
+                        "lovense.socket.connect_timeout",
+                        "Lovense Socket.IO connection timed out.",
+                        {| socketIoUrl = info.SocketIoUrl; socketIoPath = info.SocketIoPath; error = ex.Message |}
+                    )
+
+                    return Error(SocketConnectFailed(info.SocketIoUrl, info.SocketIoPath, "Lovense Socket.IO connection timed out."))
+            | :? OperationCanceledException as ex ->
+                if ct.IsCancellationRequested then
+                    return raise (OperationCanceledException())
+                else
+                    logger.Warn(
+                        "lovense.socket.connect_timeout",
+                        "Lovense Socket.IO connection was canceled before it could complete.",
+                        {| socketIoUrl = info.SocketIoUrl; socketIoPath = info.SocketIoPath; error = ex.Message |}
+                    )
+
+                    return Error(SocketConnectFailed(info.SocketIoUrl, info.SocketIoPath, "Lovense Socket.IO connection timed out."))
             | ex ->
                 return Error(SocketConnectFailed(info.SocketIoUrl, info.SocketIoPath, ex.Message))
         }

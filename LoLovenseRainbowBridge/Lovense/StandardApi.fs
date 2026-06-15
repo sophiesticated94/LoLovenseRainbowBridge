@@ -169,6 +169,37 @@ module StandardApi =
         | _ ->
             invalidArg (nameof url) $"Invalid callback listen URL '{url}'."
 
+    let private localhostFallbackPrefix (prefix: string) =
+        match Uri.TryCreate(prefix, UriKind.Absolute) with
+        | true, uri when String.Equals(uri.Host, "+", StringComparison.Ordinal) || String.Equals(uri.Host, "0.0.0.0", StringComparison.Ordinal) ->
+            Some $"{uri.Scheme}://localhost:{uri.Port}{uri.AbsolutePath}"
+        | _ -> None
+
+    let private tryStartListener (logger: StructuredSessionLogger) (config: LovenseStandardApiConfig) (prefix: string) : Result<HttpListener, exn> =
+        let listener = new HttpListener()
+        listener.Prefixes.Add(prefix)
+
+        try
+            listener.Start()
+            Ok listener
+        with
+        | :? HttpListenerException as ex when ex.ErrorCode = 5 ->
+            listener.Close()
+            logger.Warn(
+                "lovense.standard.callback.urlacl_required",
+                "Lovense Standard API callback listener needs a URL ACL or a loopback-only prefix on Windows.",
+                {|
+                    listenUrl = config.CallbackListenUrl
+                    normalizedPrefix = prefix
+                    error = ex.Message
+                    hint = $"If you want to bind to this URL, run an elevated shell and reserve it, e.g. netsh http add urlacl url={prefix} user={Environment.UserDomainName}\\{Environment.UserName}"
+                |}
+            )
+            Error ex
+        | ex ->
+            listener.Close()
+            Error ex
+
     let startCallbackListener
         (logger: StructuredSessionLogger)
         (config: LovenseStandardApiConfig)
@@ -180,9 +211,23 @@ module StandardApi =
         else
             try
                 let prefix = normalizeListenPrefix config.CallbackListenUrl
-                let listener = new HttpListener()
-                listener.Prefixes.Add(prefix)
-                listener.Start()
+                let listener =
+                    match tryStartListener logger config prefix with
+                    | Ok listener -> listener
+                    | Error _ ->
+                        match localhostFallbackPrefix prefix with
+                        | Some fallbackPrefix ->
+                            logger.Info(
+                                "lovense.standard.callback.localhost_fallback",
+                                "Retrying Lovense Standard API callback listener on localhost because the configured prefix requires an ACL.",
+                                {| listenUrl = config.CallbackListenUrl; fallbackPrefix = fallbackPrefix; publicCallbackUrl = config.PublicCallbackUrl |}
+                            )
+
+                            match tryStartListener logger config fallbackPrefix with
+                            | Ok listener -> listener
+                            | Error ex -> raise ex
+                        | None ->
+                            raise (HttpListenerException(5, $"Could not start callback listener at '{prefix}'."))
 
                 logger.Info(
                     "lovense.standard.callback.started",

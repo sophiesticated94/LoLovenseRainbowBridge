@@ -154,18 +154,20 @@ module Program =
                     | Error error -> logger.Warn("app.lovense.disconnect_failed", "Lovense replay disconnect returned an error.", {| error = string error |})
 
         | None, false ->
-            use leagueClient = new LeagueLiveClient(config.League.BaseUrl, logger)
-            use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger)
             let qrPresenter =
                 if config.Lovense.StandardApi.Enable then
                     Some(new LovenseQrWindowPresenter())
                 else
                     None
 
-            lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult() |> ignore
+            use leagueClient = new LeagueLiveClient(config.League.BaseUrl, logger)
+            use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger)
+
             qrPresenter
             |> Option.iter (fun presenter ->
-                presenter.Update(lovenseClient.LatestStandardQrCode |> Option.map (fun cached -> cached.Value)))
+                lovenseClient.SetStandardQrCodeChangedCallback presenter.Update)
+
+            lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult() |> ignore
 
             let runtimeCache = RuntimeState.RuntimeStateCache()
             use serviceProvider =

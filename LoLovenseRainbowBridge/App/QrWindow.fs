@@ -1,12 +1,16 @@
 namespace LoLovenseRainbowBridge.App
 
 open System
+open System.IO
+open System.Net.Http
 open System.Threading
+open System.Threading.Tasks
 open System.Windows
 open System.Windows.Controls
 open System.Windows.Media
 open System.Windows.Media.Imaging
 open LoLovenseRainbowBridge.Lovense
+open LoLovenseRainbowBridge
 
 type LovenseQrPresentationState =
     {
@@ -73,24 +77,100 @@ type internal LovenseQrWindow() as this =
             Margin = Thickness(24.0)
         )
 
+    let imageGate = obj()
+    let mutable imageLoadVersion = 0L
+    let mutable imageLoadCancellation: CancellationTokenSource option = None
+
+    let cancelInFlightImageLoad () =
+        lock imageGate (fun () ->
+            imageLoadCancellation
+            |> Option.iter (fun cts ->
+                try
+                    cts.Cancel()
+                finally
+                    cts.Dispose())
+
+            imageLoadVersion <- imageLoadVersion + 1L
+
+            let cts = new CancellationTokenSource()
+            imageLoadCancellation <- Some cts
+            imageLoadVersion, cts)
+
+    let loadBitmapFromBytes (bytes: byte array) =
+        use stream = new MemoryStream(bytes)
+        let frame =
+            BitmapFrame.Create(
+                stream,
+                BitmapCreateOptions.PreservePixelFormat ||| BitmapCreateOptions.IgnoreImageCache,
+                BitmapCacheOption.OnLoad
+            )
+
+        frame.Freeze()
+        frame :> ImageSource
+
+    let setImageSource (source: ImageSource option) =
+        if this.Dispatcher.CheckAccess() then
+            qrImage.Source <- defaultArg source null
+        else
+            this.Dispatcher.BeginInvoke(Action(fun () -> qrImage.Source <- defaultArg source null)) |> ignore
+
     let updateImage (qrUrl: string) =
+        let version, cts = cancelInFlightImageLoad ()
+
         try
-            let bitmap = BitmapImage()
-            bitmap.BeginInit()
-            bitmap.UriSource <- Uri(qrUrl, UriKind.Absolute)
-            bitmap.CacheOption <- BitmapCacheOption.OnLoad
-            bitmap.CreateOptions <- BitmapCreateOptions.IgnoreImageCache
-            bitmap.EndInit()
-            bitmap.Freeze()
-            qrImage.Source <- bitmap
+            if String.IsNullOrWhiteSpace qrUrl then
+                setImageSource None
+            elif qrUrl.StartsWith("data:image", StringComparison.OrdinalIgnoreCase) then
+                let commaIndex = qrUrl.IndexOf(',')
+                if commaIndex > 0 then
+                    let base64 = qrUrl.Substring(commaIndex + 1)
+                    let bytes = Convert.FromBase64String(base64)
+                    setImageSource (Some(loadBitmapFromBytes bytes))
+                else
+                    setImageSource None
+            elif Uri.IsWellFormedUriString(qrUrl, UriKind.Absolute) then
+                setImageSource None
+                Task.Run(Func<Task>(fun () ->
+                    task {
+                        try
+                            use http = Shared.insecureHttpClient ()
+                            use! response = http.GetAsync(qrUrl, cts.Token)
+                            response.EnsureSuccessStatusCode() |> ignore
+                            let! bytes = response.Content.ReadAsByteArrayAsync(cts.Token)
+
+                            if not cts.IsCancellationRequested then
+                                let image = loadBitmapFromBytes bytes
+                                if lock imageGate (fun () -> imageLoadVersion = version) then
+                                    setImageSource (Some image)
+                        with
+                        | :? OperationCanceledException -> ()
+                        | _ ->
+                            if lock imageGate (fun () -> imageLoadVersion = version) then
+                                setImageSource None
+                    }
+                ))
+                |> ignore
+            elif File.Exists(qrUrl) then
+                use stream = File.OpenRead(qrUrl)
+                let frame =
+                    BitmapFrame.Create(
+                        stream,
+                        BitmapCreateOptions.PreservePixelFormat ||| BitmapCreateOptions.IgnoreImageCache,
+                        BitmapCacheOption.OnLoad
+                    )
+                frame.Freeze()
+                setImageSource (Some(frame :> ImageSource))
+            else
+                setImageSource None
         with _ ->
-            qrImage.Source <- null
+            setImageSource None
 
     let updateVisual (qrInfo: StandardApiQrCodeInfo option) =
         match qrInfo with
         | Some info ->
             codeText.Text <- $"Lovense pairing code: {info.Code}"
             statusText.Text <- $"Expires at {info.ExpiresAt.LocalDateTime:O}"
+            qrImage.Source <- null
             updateImage info.Qr
         | None ->
             codeText.Text <- "Waiting for Lovense QR..."
@@ -109,6 +189,7 @@ type internal LovenseQrWindow() as this =
 
         panel.Children.Add(codeText) |> ignore
         panel.Children.Add(statusText) |> ignore
+        panel.Children.Add(TextBlock(Text = "QR image", FontSize = 16.0, FontWeight = FontWeights.SemiBold, Margin = Thickness(0.0, 18.0, 0.0, 4.0))) |> ignore
         panel.Children.Add(qrImage) |> ignore
         this.Content <- ScrollViewer(Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto)
 

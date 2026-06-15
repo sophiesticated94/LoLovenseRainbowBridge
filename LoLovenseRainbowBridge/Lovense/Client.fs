@@ -29,6 +29,11 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
         }
 
     let mutable standardCallbackServer: StandardApiCallbackServer option = None
+    let mutable onStandardQrCodeChanged: (StandardApiQrCodeInfo option -> unit) option = None
+
+    let notifyStandardQrCodeChanged () =
+        onStandardQrCodeChanged
+        |> Option.iter (fun callback -> callback(session.StandardQrCode |> Option.map (fun cached -> cached.Value)))
 
     let handleDeviceInfo (deviceInfo: LovenseDeviceInfo) =
         session <- ClientState.applyDeviceInfo deviceInfo session
@@ -36,6 +41,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
     let handleQrCode () =
         if not session.QrCodeLogged then
             session <- ClientState.onQrCode session
+            notifyStandardQrCodeChanged ()
             printfn "Lovense QR code event received. See track.log or lovense.log if raw logging is enabled."
 
     member _.CommandUrl =
@@ -47,6 +53,10 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
 
     member _.LatestStandardQrCode = session.StandardQrCode
 
+    member _.SetStandardQrCodeChangedCallback(callback: StandardApiQrCodeInfo option -> unit) =
+        onStandardQrCodeChanged <- Some callback
+        notifyStandardQrCodeChanged ()
+
     member _.ApplyDeviceInfo(deviceInfo: LovenseDeviceInfo) =
         session <- ClientState.applyDeviceInfo deviceInfo session
 
@@ -55,6 +65,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
             let! (updatedSession, newCallbackServer) = ClientConnection.ensureStandardApiReadyAsync http logger config session standardCallbackServer handleDeviceInfo ct
             session <- updatedSession
             standardCallbackServer <- newCallbackServer
+            notifyStandardQrCodeChanged ()
         }
 
     member _.EnsureConnectedAsync(ct: CancellationToken) =
