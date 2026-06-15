@@ -6,11 +6,8 @@ open LoLovenseRainbowBridge.Bridge
 
 type LovensePlanningPosition =
     {
-        [<field: CalculatorVariable(Name = "PositionX")>]
         NormalizedX: float
-        [<field: CalculatorVariable(Name = "PositionY")>]
         NormalizedY: float
-        [<field: CalculatorVariable(Name = "PositionConfidence")>]
         Confidence: float
         Quadrant: string
         Zone: string
@@ -39,23 +36,7 @@ type LovenseFunctionLayers =
         Contributions: string list
     }
 
-type LovenseCommandBuilderState =
-    {
-        [<field: CalculatorVariable(Name = "IncarnationId")>]
-        CurrentIncarnationId: int
-        [<field: CalculatorVariable(Name = "PreviousIncarnationBase")>]
-        PreviousIncarnationBase: float
-        [<field: CalculatorVariable(Name = "CurrentBase")>]
-        CurrentBase: float
-        [<field: CalculatorVariable(Name = "MaxBaseThisIncarnation")>]
-        MaxBaseThisIncarnation: float
-        [<field: CalculatorVariable(Name = "MinBaseThisIncarnation")>]
-        MinBaseThisIncarnation: float
-        [<field: CalculatorVariable(Name = "LovenseIteration")>]
-        LovenseIteration: int64
-        LastFunctionState: Map<string, int>
-        LastActionString: string option
-    }
+type LovenseCommandBuilderState = CommandBuilderCacheState
 
 type LovenseRuleDiagnostic =
     {

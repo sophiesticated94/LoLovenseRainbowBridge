@@ -37,21 +37,6 @@ type RuleInputBuilder(scoringConfig: ScoringConfig, ?cache: IAppCache) =
 
     let boolValue value = if value then 1.0 else 0.0
 
-    let positionWeights position =
-        match position |> Option.map (fun value -> value.Quadrant) with
-        | Some value when String.Equals(value, "Center", StringComparison.OrdinalIgnoreCase) -> 1.0, 1.0
-        | Some value when String.Equals(value, "TopLeft", StringComparison.OrdinalIgnoreCase) -> 1.35, 0.35
-        | Some value when String.Equals(value, "TopRight", StringComparison.OrdinalIgnoreCase) -> 0.35, 1.35
-        | Some value when String.Equals(value, "BottomLeft", StringComparison.OrdinalIgnoreCase) -> 0.0, 0.0
-        | Some value when String.Equals(value, "BottomRight", StringComparison.OrdinalIgnoreCase) -> 0.55, 1.05
-        | Some value when String.Equals(value, "Left", StringComparison.OrdinalIgnoreCase) -> 1.15, 0.65
-        | Some value when String.Equals(value, "Right", StringComparison.OrdinalIgnoreCase) -> 0.65, 1.15
-        | Some _ ->
-            match position with
-            | Some p -> CapabilityResolver.stereoWeightsFromNormalizedX 100 p.NormalizedX |> fun (l, r) -> float l / 100.0, float r / 100.0
-            | None -> 1.0, 1.0
-        | None -> 1.0, 1.0
-
     let recentWithin windowSec (snapshot: BridgeSnapshot) (ev: BridgeEvent) =
         ev.GameTime <= snapshot.GameTime && snapshot.GameTime - ev.GameTime <= windowSec
 
@@ -186,10 +171,6 @@ type RuleInputBuilder(scoringConfig: ScoringConfig, ?cache: IAppCache) =
             let loopIterationWithinSecond = float ((int64 loopIteration) % int64 iterationsPerSecond)
             let loopTimeSec = loopIteration * float safePollMs / 1000.0
             let projectedCacheVariables = cacheVariables input.Now
-            let projectedStateVariables = AppCache.projectAnnotated None state
-            let positionLeftWeight, positionRightWeight = positionWeights input.Position
-            let positionAvailable = input.Position.IsSome
-
             Map.empty
             |> add "Kills" (float active.Kills)
             |> add "Deaths" (float active.Deaths)
@@ -236,13 +217,6 @@ type RuleInputBuilder(scoringConfig: ScoringConfig, ?cache: IAppCache) =
             |> add "LoopTimeSec" loopTimeSec
             |> add "RuntimePollMs" (float safePollMs)
             |> RuleInternals.mergeVariables projectedCacheVariables
-            |> RuleInternals.mergeVariables projectedStateVariables
-            |> add "PositionAvailable" (boolValue positionAvailable)
-            |> add "PositionLeftWeight" positionLeftWeight
-            |> add "PositionRightWeight" positionRightWeight
-            |> add "PositionX" (input.Position |> Option.map (fun p -> p.NormalizedX) |> Option.defaultValue 0.0)
-            |> add "PositionY" (input.Position |> Option.map (fun p -> p.NormalizedY) |> Option.defaultValue 0.0)
-            |> add "PositionConfidence" (input.Position |> Option.map (fun p -> p.Confidence) |> Option.defaultValue 0.0)
             |> add "Pi" Math.PI
             |> RuleInternals.mergeVariables (RuleInternals.layerVariables layers)
             |> RuleInternals.mergeVariables (RuleInternals.functionRangeVariables ())

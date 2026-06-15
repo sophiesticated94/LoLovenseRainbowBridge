@@ -57,22 +57,6 @@ module RuntimeState =
             ToyFailureAttemptsSinceSuccess: int
         }
 
-    type CommandBuilderCacheState =
-        {
-            [<field: CalculatorVariable(Name = "IncarnationId")>]
-            CurrentIncarnationId: int
-            [<field: CalculatorVariable(Name = "PreviousIncarnationBase")>]
-            PreviousIncarnationBase: float
-            [<field: CalculatorVariable(Name = "CurrentBase")>]
-            CurrentBase: float
-            [<field: CalculatorVariable(Name = "MaxBaseThisIncarnation")>]
-            MaxBaseThisIncarnation: float
-            [<field: CalculatorVariable(Name = "MinBaseThisIncarnation")>]
-            MinBaseThisIncarnation: float
-            [<field: CalculatorVariable(Name = "LovenseIteration")>]
-            LovenseIteration: int64
-        }
-
     type OcrCacheState =
         {
             Position: Lovense.LovensePlanningPosition option
@@ -196,7 +180,22 @@ module RuntimeState =
             MaxBaseThisIncarnation = 0.0
             MinBaseThisIncarnation = 0.0
             LovenseIteration = 0L
+            LastFunctionState = LovenseActionCodec.emptyState
+            LastActionString = None
         }
+
+    let positionWeightsFromQuadrant quadrant normalizedX =
+        match quadrant |> Option.ofObj |> Option.defaultValue "" with
+        | value when String.Equals(value, "Center", StringComparison.OrdinalIgnoreCase) -> 1.0, 1.0
+        | value when String.Equals(value, "TopLeft", StringComparison.OrdinalIgnoreCase) -> 1.35, 0.35
+        | value when String.Equals(value, "TopRight", StringComparison.OrdinalIgnoreCase) -> 0.35, 1.35
+        | value when String.Equals(value, "BottomLeft", StringComparison.OrdinalIgnoreCase) -> 0.0, 0.0
+        | value when String.Equals(value, "BottomRight", StringComparison.OrdinalIgnoreCase) -> 0.55, 1.05
+        | value when String.Equals(value, "Left", StringComparison.OrdinalIgnoreCase) -> 1.15, 0.65
+        | value when String.Equals(value, "Right", StringComparison.OrdinalIgnoreCase) -> 0.65, 1.15
+        | _ ->
+            CapabilityResolver.stereoWeightsFromNormalizedX 100 normalizedX
+            |> fun (l, r) -> float l / 100.0, float r / 100.0
 
     let private initialLovense =
         {
@@ -260,7 +259,7 @@ module RuntimeState =
             member _.Read() =
                 lock gate (fun () -> box snapshot)
 
-        member _.UpdateCommandBuilder(builder: Lovense.LovenseCommandBuilderState) =
+        member _.UpdateCommandBuilder(builder: CommandBuilderCacheState) =
             lock gate (fun () ->
                 snapshot <-
                     {
@@ -273,6 +272,8 @@ module RuntimeState =
                                     MaxBaseThisIncarnation = builder.MaxBaseThisIncarnation
                                     MinBaseThisIncarnation = builder.MinBaseThisIncarnation
                                     LovenseIteration = builder.LovenseIteration
+                                    LastFunctionState = builder.LastFunctionState
+                                    LastActionString = builder.LastActionString
                                 }
                     })
 
@@ -317,6 +318,7 @@ module RuntimeState =
         member _.UpdateOcrSuccess position =
             lock gate (fun () ->
                 let now = DateTimeOffset.UtcNow
+                let leftWeight, rightWeight = positionWeightsFromQuadrant position.Quadrant position.NormalizedX
                 snapshot <-
                     {
                         snapshot with
@@ -328,8 +330,8 @@ module RuntimeState =
                                         PositionX = position.NormalizedX
                                         PositionY = position.NormalizedY
                                         PositionConfidence = position.Confidence
-                                        PositionLeftWeight = 1.0 - max 0.0 (min 1.0 position.NormalizedX)
-                                        PositionRightWeight = max 0.0 (min 1.0 position.NormalizedX)
+                                        PositionLeftWeight = leftWeight
+                                        PositionRightWeight = rightWeight
                                         DataAcquired = true
                                         DetectionFailures = 0
                                         LastSuccessfulAt = Some now

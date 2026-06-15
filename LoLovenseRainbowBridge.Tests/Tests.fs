@@ -1965,25 +1965,27 @@ let ``rule command builder tracks max base and clamps to incarnation floor`` () 
 
 [<Fact>]
 let ``rule command builder applies minimap stereo position modulation`` () =
-    let builder = builderWithCache ruleEngineLovenseConfig
+    let cache = RuntimeState.RuntimeStateCache()
+    let builder = LovenseCommandValueBuilder(ruleEngineLovenseConfig, ruleInterpreter (), cache.UpdateCommandBuilder) :> ILovenseCommandValueBuilder
     let baseSnapshot = snapshot (Some(1000.0, 1000.0)) []
     let active = { baseSnapshot.ActivePlayer with Kills = 10 }
+    cache.UpdateOcrSuccess
+        {
+            NormalizedX = 0.1
+            NormalizedY = 0.1
+            Confidence = 0.9
+            Quadrant = "TopLeft"
+            Zone = "TopLane"
+            DetectionMethod = "test"
+        }
+
     let frame =
         builder.Build
             {
                 PreviousState = initialState
                 Snapshot = { baseSnapshot with ActivePlayer = active; Players = [ active ] }
                 EvolvedState = initialState
-                Position =
-                    Some
-                        {
-                            NormalizedX = 0.1
-                            NormalizedY = 0.1
-                            Confidence = 0.9
-                            Quadrant = "TopLeft"
-                            Zone = "TopLane"
-                            DetectionMethod = "test"
-                        }
+                Position = None
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
                 LastSentFunctionState = LovenseActionCodec.emptyState

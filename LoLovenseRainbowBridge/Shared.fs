@@ -99,6 +99,24 @@ type CalculatorVariableAttribute() =
 
     member val Name = "" with get, set
 
+type CommandBuilderCacheState =
+    {
+        [<field: CalculatorVariable(Name = "IncarnationId")>]
+        CurrentIncarnationId: int
+        [<field: CalculatorVariable(Name = "PreviousIncarnationBase")>]
+        PreviousIncarnationBase: float
+        [<field: CalculatorVariable(Name = "CurrentBase")>]
+        CurrentBase: float
+        [<field: CalculatorVariable(Name = "MaxBaseThisIncarnation")>]
+        MaxBaseThisIncarnation: float
+        [<field: CalculatorVariable(Name = "MinBaseThisIncarnation")>]
+        MinBaseThisIncarnation: float
+        [<field: CalculatorVariable(Name = "LovenseIteration")>]
+        LovenseIteration: int64
+        LastFunctionState: Map<string, int>
+        LastActionString: string option
+    }
+
 module AppCache =
 
     type CacheEnvelope<'T> =
