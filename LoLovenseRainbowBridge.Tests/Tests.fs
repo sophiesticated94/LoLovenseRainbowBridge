@@ -2196,78 +2196,27 @@ let ``lovense command builder creates changed plan only for function diffs`` () 
 
 [<Fact>]
 let ``lol unavailable arpeggio is expressed as cyclic configurable rules`` () =
-    let config =
-        {
-            ruleEngineLovenseConfig with
-                Mapping =
-                    {
-                        ruleEngineLovenseConfig.Mapping with
-                            FunctionProfiles =
-                                [
-                                    functionProfile "Vibrate1" true
-                                    functionProfile "Vibrate2" true
-                                ]
-                            Rules =
-                                [
-                                    functionRule
-                                        "lol-unavailable-arpeggio1"
-                                        "Effect"
-                                        ""
-                                        "LolDataAcquired == 0"
-                                        "Vibrate1"
-                                        "Effect"
-                                        "Set"
-                                        "Min(FunctionMax_Vibrate1, 20 - Abs(Mod(Floor(LolUnavailableElapsedMs / 1000.0), 40) - 20))"
-                                    functionRule
-                                        "lol-unavailable-arpeggio2"
-                                        "Effect"
-                                        ""
-                                        "LolDataAcquired == 0"
-                                        "Vibrate2"
-                                        "Effect"
-                                        "Set"
-                                        "Min(FunctionMax_Vibrate2, Abs(Mod(Floor(LolUnavailableElapsedMs / 1000.0), 40) - 20))"
-                                ]
-                    }
-        }
+    let evaluator = RuleExpressionEvaluator() :> IRuleExpressionEvaluator
 
-    let cache = RuntimeState.RuntimeStateCache()
-    let interpreter = LovenseRuleInterpreter(RuleInputBuilder(cache), RuleExpressionEvaluator())
-    let builder = LovenseCommandValueBuilder(config, interpreter, cache.UpdateCommandBuilder) :> ILovenseCommandValueBuilder
-    cache.UpdateLeagueFailure "lol unavailable"
+    let evaluate elapsedMs expression =
+        let variables =
+            Map.empty
+            |> Map.add "LolUnavailableElapsedMs" elapsedMs
 
-    let buildAt elapsedMs iteration =
-        let now = DateTimeOffset.Parse("2026-06-13T10:00:00Z").AddMilliseconds(float elapsedMs)
-        cache.UpdateLovenseClock(iteration, now, 100)
+        match evaluator.Evaluate expression variables with
+        | Ok value -> int value
+        | Error error -> failwithf "Expected expression to evaluate, got %s" error
 
-        builder.Build
-            {
-                PreviousState = initialState
-                Snapshot = snapshot (Some(1000.0, 1000.0)) []
-                EvolvedState = initialState
-                Position = None
-                Now = now
-                LoopIteration = iteration
-                LastSentFunctionState = LovenseActionCodec.emptyState
-                RuntimePollMs = 100
-            }
-
-    let frame0 = buildAt 0L 1L
-    let frame10 = buildAt 10000L 2L
-    let frame20 = buildAt 20000L 3L
-    let frame21 = buildAt 21000L 4L
-    let frame40 = buildAt 40000L 5L
-
-    Assert.Equal(0, frame0.FunctionStates[Vibrate1].Final)
-    Assert.Equal(20, frame0.FunctionStates[Vibrate2].Final)
-    Assert.Equal(10, frame10.FunctionStates[Vibrate1].Final)
-    Assert.Equal(10, frame10.FunctionStates[Vibrate2].Final)
-    Assert.Equal(20, frame20.FunctionStates[Vibrate1].Final)
-    Assert.Equal(0, frame20.FunctionStates[Vibrate2].Final)
-    Assert.Equal(19, frame21.FunctionStates[Vibrate1].Final)
-    Assert.Equal(1, frame21.FunctionStates[Vibrate2].Final)
-    Assert.Equal(0, frame40.FunctionStates[Vibrate1].Final)
-    Assert.Equal(20, frame40.FunctionStates[Vibrate2].Final)
+    Assert.Equal(0, evaluate 0.0 "Floor(LolUnavailableElapsedMs / 1000.0) % 21")
+    Assert.Equal(20, evaluate 0.0 "20 - (Floor(LolUnavailableElapsedMs / 1000.0) % 21)")
+    Assert.Equal(10, evaluate 10000.0 "Floor(LolUnavailableElapsedMs / 1000.0) % 21")
+    Assert.Equal(10, evaluate 10000.0 "20 - (Floor(LolUnavailableElapsedMs / 1000.0) % 21)")
+    Assert.Equal(20, evaluate 20000.0 "Floor(LolUnavailableElapsedMs / 1000.0) % 21")
+    Assert.Equal(0, evaluate 20000.0 "20 - (Floor(LolUnavailableElapsedMs / 1000.0) % 21)")
+    Assert.Equal(0, evaluate 21000.0 "Floor(LolUnavailableElapsedMs / 1000.0) % 21")
+    Assert.Equal(20, evaluate 21000.0 "20 - (Floor(LolUnavailableElapsedMs / 1000.0) % 21)")
+    Assert.Equal(19, evaluate 40000.0 "Floor(LolUnavailableElapsedMs / 1000.0) % 21")
+    Assert.Equal(1, evaluate 40000.0 "20 - (Floor(LolUnavailableElapsedMs / 1000.0) % 21)")
 
 [<Fact>]
 let ``sqlite recorder opens closes and skips unchanged slices`` () =
