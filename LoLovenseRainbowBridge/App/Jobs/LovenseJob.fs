@@ -46,7 +46,7 @@ type LovenseRuleJob
                         let now = DateTimeOffset.UtcNow
                         let currentLoopIteration = loopIteration
                         loopIteration <- loopIteration + 1L
-                        cache.UpdateRuleClock(currentLoopIteration, now, runtimeConfig.LovensePollMs)
+                        cache.UpdateLovenseClock(currentLoopIteration, now, runtimeConfig.LovensePollMs)
                         let activeSnapshot = cacheSnapshot.League.Snapshot |> Option.defaultValue RuntimeState.neutralSnapshot
 
                         let commandFrame =

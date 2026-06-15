@@ -15,48 +15,6 @@ module RuntimeState =
             DetectionFailures: int
         }
 
-    type LeagueCacheState =
-        {
-            Snapshot: BridgeSnapshot option
-            [<field: CalculatorVariable(Name = "LolDataAcquired")>]
-            DataAcquired: bool
-            [<field: CalculatorVariable(Name = "LolFailureAttemptsSinceSuccess")>]
-            FailureAttemptsSinceSuccess: int
-            LastSuccessfulAt: DateTimeOffset option
-            [<field: CalculatorVariable(Name = "LolUnavailableElapsedMs")>]
-            UnavailableSince: DateTimeOffset option
-            LastError: string option
-            Version: int64
-        }
-
-    type RuntimeContextCacheState =
-        {
-            [<field: CalculatorVariable(Name = "LolDataAcquired")>]
-            LolDataAcquired: bool
-            [<field: CalculatorVariable(Name = "OcrDataAcquired")>]
-            OcrDataAcquired: bool
-            [<field: CalculatorVariable(Name = "LovenseDataAcquired")>]
-            LovenseDataAcquired: bool
-            [<field: CalculatorVariable(Name = "ToyDataAcquired")>]
-            ToyDataAcquired: bool
-            [<field: CalculatorVariable(Name = "LolUnavailableElapsedMs")>]
-            LolUnavailableElapsedMs: int64
-            [<field: CalculatorVariable(Name = "OcrUnavailableElapsedMs")>]
-            OcrUnavailableElapsedMs: int64
-            [<field: CalculatorVariable(Name = "LovenseUnavailableElapsedMs")>]
-            LovenseUnavailableElapsedMs: int64
-            [<field: CalculatorVariable(Name = "ToyUnavailableElapsedMs")>]
-            ToyUnavailableElapsedMs: int64
-            [<field: CalculatorVariable(Name = "LolFailureAttemptsSinceSuccess")>]
-            LolFailureAttemptsSinceSuccess: int
-            [<field: CalculatorVariable(Name = "OcrFailureAttemptsSinceSuccess")>]
-            OcrFailureAttemptsSinceSuccess: int
-            [<field: CalculatorVariable(Name = "LovenseFailureAttemptsSinceSuccess")>]
-            LovenseFailureAttemptsSinceSuccess: int
-            [<field: CalculatorVariable(Name = "ToyFailureAttemptsSinceSuccess")>]
-            ToyFailureAttemptsSinceSuccess: int
-        }
-
     type LeagueRuleCacheState =
         {
             [<field: CalculatorVariable(Name = "Kills")>]
@@ -139,18 +97,44 @@ module RuntimeState =
             JungleTensionValue: float
         }
 
-    type RuleClockCacheState =
+    type LeagueCacheState =
         {
-            [<field: CalculatorVariable(Name = "LoopIteration")>]
-            LoopIteration: float
-            [<field: CalculatorVariable(Name = "LoopIterationWithinSecond")>]
-            LoopIterationWithinSecond: float
-            [<field: CalculatorVariable(Name = "LoopIterationsPerSecond")>]
-            LoopIterationsPerSecond: float
-            [<field: CalculatorVariable(Name = "LoopTimeSec")>]
-            LoopTimeSec: float
-            [<field: CalculatorVariable(Name = "RuntimePollMs")>]
-            RuntimePollMs: float
+            Snapshot: BridgeSnapshot option
+            Calculated: LeagueRuleCacheState
+            DataAcquired: bool
+            FailureAttemptsSinceSuccess: int
+            LastSuccessfulAt: DateTimeOffset option
+            UnavailableSince: DateTimeOffset option
+            LastError: string option
+            Version: int64
+        }
+
+    type RuntimeContextCacheState =
+        {
+            [<field: CalculatorVariable(Name = "LolDataAcquired")>]
+            LolDataAcquired: bool
+            [<field: CalculatorVariable(Name = "OcrDataAcquired")>]
+            OcrDataAcquired: bool
+            [<field: CalculatorVariable(Name = "LovenseDataAcquired")>]
+            LovenseDataAcquired: bool
+            [<field: CalculatorVariable(Name = "ToyDataAcquired")>]
+            ToyDataAcquired: bool
+            [<field: CalculatorVariable(Name = "LolUnavailableElapsedMs")>]
+            LolUnavailableElapsedMs: int64
+            [<field: CalculatorVariable(Name = "OcrUnavailableElapsedMs")>]
+            OcrUnavailableElapsedMs: int64
+            [<field: CalculatorVariable(Name = "LovenseUnavailableElapsedMs")>]
+            LovenseUnavailableElapsedMs: int64
+            [<field: CalculatorVariable(Name = "ToyUnavailableElapsedMs")>]
+            ToyUnavailableElapsedMs: int64
+            [<field: CalculatorVariable(Name = "LolFailureAttemptsSinceSuccess")>]
+            LolFailureAttemptsSinceSuccess: int
+            [<field: CalculatorVariable(Name = "OcrFailureAttemptsSinceSuccess")>]
+            OcrFailureAttemptsSinceSuccess: int
+            [<field: CalculatorVariable(Name = "LovenseFailureAttemptsSinceSuccess")>]
+            LovenseFailureAttemptsSinceSuccess: int
+            [<field: CalculatorVariable(Name = "ToyFailureAttemptsSinceSuccess")>]
+            ToyFailureAttemptsSinceSuccess: int
         }
 
     type OcrPositionProjection =
@@ -216,12 +200,9 @@ module RuntimeState =
             PositionZoneBase: bool
             [<field: CalculatorVariable(Name = "PositionZoneUnknown")>]
             PositionZoneUnknown: bool
-            [<field: CalculatorVariable(Name = "OcrDataAcquired")>]
             DataAcquired: bool
-            [<field: CalculatorVariable(Name = "OcrFailureAttemptsSinceSuccess")>]
             DetectionFailures: int
             LastSuccessfulAt: DateTimeOffset option
-            [<field: CalculatorVariable(Name = "OcrUnavailableElapsedMs")>]
             UnavailableSince: DateTimeOffset option
             LastError: string option
             Version: int64
@@ -229,14 +210,20 @@ module RuntimeState =
 
     type LovenseCacheState =
         {
-            [<field: CalculatorVariable(Name = "LovenseDataAcquired")>]
+            [<field: CalculatorVariable(Name = "LoopIteration")>]
+            LoopIteration: float
+            [<field: CalculatorVariable(Name = "LoopIterationWithinSecond")>]
+            LoopIterationWithinSecond: float
+            [<field: CalculatorVariable(Name = "LoopIterationsPerSecond")>]
+            LoopIterationsPerSecond: float
+            [<field: CalculatorVariable(Name = "LoopTimeSec")>]
+            LoopTimeSec: float
+            [<field: CalculatorVariable(Name = "RuntimePollMs")>]
+            RuntimePollMs: float
             DataAcquired: bool
-            [<field: CalculatorVariable(Name = "LovenseConnected")>]
             Connected: bool
-            [<field: CalculatorVariable(Name = "LovenseFailureAttemptsSinceSuccess")>]
             FailureAttemptsSinceSuccess: int
             LastSuccessfulAt: DateTimeOffset option
-            [<field: CalculatorVariable(Name = "LovenseUnavailableElapsedMs")>]
             UnavailableSince: DateTimeOffset option
             LastError: string option
             Version: int64
@@ -245,12 +232,9 @@ module RuntimeState =
     type ToyCacheState =
         {
             DeviceInfo: LovenseDeviceInfo option
-            [<field: CalculatorVariable(Name = "ToyDataAcquired")>]
             DataAcquired: bool
-            [<field: CalculatorVariable(Name = "ToyFailureAttemptsSinceSuccess")>]
             FailureAttemptsSinceSuccess: int
             LastSuccessfulAt: DateTimeOffset option
-            [<field: CalculatorVariable(Name = "ToyUnavailableElapsedMs")>]
             UnavailableSince: DateTimeOffset option
             LastError: string option
             Version: int64
@@ -259,8 +243,6 @@ module RuntimeState =
     type RuntimeCacheSnapshot =
         {
             RuntimeContext: RuntimeContextCacheState
-            LeagueRules: LeagueRuleCacheState
-            RuleClock: RuleClockCacheState
             CommandBuilder: CommandBuilderCacheState
             League: LeagueCacheState
             Ocr: OcrCacheState
@@ -274,9 +256,53 @@ module RuntimeState =
             DetectionFailures = 0
         }
 
+    let private initialLeagueCalculated =
+        {
+            Kills = 0.0
+            Deaths = 0.0
+            Assists = 0.0
+            CreepScore = 0.0
+            CS = 0.0
+            WardScore = 0.0
+            Level = 0.0
+            CurrentHealth = 0.0
+            MaxHealth = 0.0
+            HealthPercent = 1.0
+            MissingHealth = 0.0
+            GameTime = 0.0
+            RawPerformanceScore = 0.0
+            NormalizedScore = 0.0
+            PerformanceScore = 0.0
+            DeathPenalty = 0.0
+            LiveHealthMultiplier = 1.0
+            HealthPressureMultiplier = 1.0
+            ActiveKill = 0.0
+            ActiveKillCount = 0.0
+            ActiveDeath = 0.0
+            ActiveDeathCount = 0.0
+            ActiveMultikill = 0.0
+            MultikillCount = 0.0
+            TotalMultikillCount = 0.0
+            ObjectiveWaveValue = 0.0
+            TeamfightKillCount = 0.0
+            TeamfightBurstValue = 0.0
+            AceBurstValue = 0.0
+            HeartbeatAmplitude = 0.0
+            LowHealthHeartbeatThreshold = 0.0
+            CriticalHealthHeartbeatThreshold = 0.0
+            HeartbeatPulseMaxAmplitude = 0.0
+            HeartbeatPulseCycleSec = 0.0
+            HeartbeatPulseStartPhase = 0.0
+            HeartbeatPulsePeakPhase = 0.0
+            HeartbeatPulseEndPhase = 0.0
+            LaningTextureValue = 0.0
+            JungleTensionValue = 0.0
+        }
+
     let private initialLeague =
         {
             Snapshot = None
+            Calculated = initialLeagueCalculated
             DataAcquired = false
             FailureAttemptsSinceSuccess = 0
             LastSuccessfulAt = None
@@ -332,58 +358,6 @@ module RuntimeState =
             ToyFailureAttemptsSinceSuccess = 0
         }
 
-    let private initialLeagueRules =
-        {
-            Kills = 0.0
-            Deaths = 0.0
-            Assists = 0.0
-            CreepScore = 0.0
-            CS = 0.0
-            WardScore = 0.0
-            Level = 0.0
-            CurrentHealth = 0.0
-            MaxHealth = 0.0
-            HealthPercent = 1.0
-            MissingHealth = 0.0
-            GameTime = 0.0
-            RawPerformanceScore = 0.0
-            NormalizedScore = 0.0
-            PerformanceScore = 0.0
-            DeathPenalty = 0.0
-            LiveHealthMultiplier = 1.0
-            HealthPressureMultiplier = 1.0
-            ActiveKill = 0.0
-            ActiveKillCount = 0.0
-            ActiveDeath = 0.0
-            ActiveDeathCount = 0.0
-            ActiveMultikill = 0.0
-            MultikillCount = 0.0
-            TotalMultikillCount = 0.0
-            ObjectiveWaveValue = 0.0
-            TeamfightKillCount = 0.0
-            TeamfightBurstValue = 0.0
-            AceBurstValue = 0.0
-            HeartbeatAmplitude = 0.0
-            LowHealthHeartbeatThreshold = 0.0
-            CriticalHealthHeartbeatThreshold = 0.0
-            HeartbeatPulseMaxAmplitude = 0.0
-            HeartbeatPulseCycleSec = 0.0
-            HeartbeatPulseStartPhase = 0.0
-            HeartbeatPulsePeakPhase = 0.0
-            HeartbeatPulseEndPhase = 0.0
-            LaningTextureValue = 0.0
-            JungleTensionValue = 0.0
-        }
-
-    let private initialRuleClock =
-        {
-            LoopIteration = 0.0
-            LoopIterationWithinSecond = 0.0
-            LoopIterationsPerSecond = 0.0
-            LoopTimeSec = 0.0
-            RuntimePollMs = 0.0
-        }
-
     let private initialCommandBuilder =
         {
             CurrentIncarnationId = 1
@@ -398,6 +372,11 @@ module RuntimeState =
 
     let private initialLovense =
         {
+            LoopIteration = 0.0
+            LoopIterationWithinSecond = 0.0
+            LoopIterationsPerSecond = 0.0
+            LoopTimeSec = 0.0
+            RuntimePollMs = 0.0
             DataAcquired = false
             Connected = false
             FailureAttemptsSinceSuccess = 0
@@ -423,8 +402,6 @@ module RuntimeState =
         let mutable snapshot =
             {
                 RuntimeContext = initialRuntimeContext
-                LeagueRules = initialLeagueRules
-                RuleClock = initialRuleClock
                 CommandBuilder = initialCommandBuilder
                 League = initialLeague
                 Ocr = initialOcr
@@ -460,14 +437,6 @@ module RuntimeState =
             member _.Read() =
                 lock gate (fun () -> box snapshot)
 
-        member _.UpdateLeagueRules(leagueRules: LeagueRuleCacheState) =
-            lock gate (fun () ->
-                snapshot <- { snapshot with LeagueRules = leagueRules })
-
-        member _.UpdateRuleClock(ruleClock: RuleClockCacheState) =
-            lock gate (fun () ->
-                snapshot <- { snapshot with RuleClock = ruleClock })
-
         member _.UpdateCommandBuilder(builder: CommandBuilderCacheState) =
             lock gate (fun () ->
                 snapshot <-
@@ -496,6 +465,7 @@ module RuntimeState =
                                 {
                                     snapshot.League with
                                         Snapshot = Some leagueSnapshot
+                                        Calculated = leagueRules
                                         DataAcquired = true
                                         FailureAttemptsSinceSuccess = 0
                                         LastSuccessfulAt = Some now
@@ -503,7 +473,6 @@ module RuntimeState =
                                         LastError = None
                                         Version = snapshot.League.Version + 1L
                                 }
-                            LeagueRules = leagueRules
                     }
                 snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
@@ -775,7 +744,7 @@ module RuntimeState =
                     }
                 snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
-        member _.UpdateRuleClock(loopIteration: int64, now: DateTimeOffset, runtimePollMs: int) =
+        member _.UpdateLovenseClock(loopIteration: int64, now: DateTimeOffset, runtimePollMs: int) =
             lock gate (fun () ->
                 let safePollMs = max 1 runtimePollMs
                 let iterationsPerSecond = max 1.0 (Math.Round(1000.0 / float safePollMs))
@@ -786,13 +755,14 @@ module RuntimeState =
                 snapshot <-
                     {
                         snapshot with
-                            RuleClock =
+                            Lovense =
                                 {
-                                    LoopIteration = loopIterationFloat
-                                    LoopIterationWithinSecond = loopIterationWithinSecond
-                                    LoopIterationsPerSecond = iterationsPerSecond
-                                    LoopTimeSec = loopTimeSec
-                                    RuntimePollMs = float safePollMs
+                                    snapshot.Lovense with
+                                        LoopIteration = loopIterationFloat
+                                        LoopIterationWithinSecond = loopIterationWithinSecond
+                                        LoopIterationsPerSecond = iterationsPerSecond
+                                        LoopTimeSec = loopTimeSec
+                                        RuntimePollMs = float safePollMs
                                 }
                     })
 

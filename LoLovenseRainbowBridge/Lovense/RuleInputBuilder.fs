@@ -10,29 +10,8 @@ type RuleInputBuilder(?cache: IAppCache) =
         match cache with
         | None -> Map.empty
         | Some cache ->
-            let snapshot = cache.Read()
-            let snapshotType = snapshot.GetType()
-
-            let projectChild name =
-                let property = snapshotType.GetProperty(name)
-
-                if isNull property then
-                    Map.empty
-                else
-                    property.GetValue(snapshot)
-                    |> AppCache.projectAnnotated (Some now)
-
-            [
-                projectChild "League"
-                projectChild "LeagueRules"
-                projectChild "RuleClock"
-                projectChild "Ocr"
-                projectChild "Lovense"
-                projectChild "Toys"
-                projectChild "RuntimeContext"
-                projectChild "CommandBuilder"
-            ]
-            |> List.fold RuleInternals.mergeVariables Map.empty
+            cache.Read()
+            |> AppCache.projectAnnotated (Some now)
 
     new (_scoringConfig: ScoringConfig) = RuleInputBuilder(?cache = None)
 

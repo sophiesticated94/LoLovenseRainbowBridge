@@ -4,6 +4,7 @@ open System
 open System.Net.Http
 open System.Globalization
 open System.Reflection
+open System.Runtime.CompilerServices
 open System.Text.RegularExpressions
 open System.Text.Json.Nodes
 open Microsoft.FSharp.Reflection
@@ -187,23 +188,61 @@ module AppCache =
 
                 Some(name, value)
 
-    let projectAnnotated (now: DateTimeOffset option) (source: obj) =
+    let private canRecurse (value: obj) =
+        if isNull value then
+            false
+        else
+            let valueType = value.GetType()
+            not valueType.IsPrimitive
+            && not valueType.IsEnum
+            && valueType <> typeof<string>
+            && valueType <> typeof<decimal>
+            && valueType <> typeof<DateTime>
+            && valueType <> typeof<DateTimeOffset>
+            && valueType <> typeof<TimeSpan>
+            && not (typeof<System.Collections.IEnumerable>.IsAssignableFrom valueType && valueType <> typeof<byte[]>)
+            && not (FSharpType.IsUnion(valueType, true) && valueType.FullName.StartsWith("Microsoft.FSharp.Core.FSharpOption`1", StringComparison.Ordinal))
+
+    let rec private projectAnnotatedInternal (now: DateTimeOffset option) (visited: System.Collections.Generic.HashSet<int>) (source: obj) =
         if isNull source then
             Map.empty
         else
-            let flags = BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic
-            let members =
-                [
-                    for field in source.GetType().GetFields(flags) do
-                        yield projectMember now field (fun () -> field.GetValue(source))
+            let identity = RuntimeHelpers.GetHashCode(source)
 
-                    for propertyInfo in source.GetType().GetProperties(flags) do
-                        if propertyInfo.GetIndexParameters().Length = 0 && propertyInfo.CanRead then
-                            yield projectMember now propertyInfo (fun () -> propertyInfo.GetValue(source))
-                ]
-                |> List.choose id
+            if visited.Contains identity then
+                Map.empty
+            else
+                visited.Add identity |> ignore
 
-            members |> Map.ofList
+                let flags = BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic
+                let current =
+                    [
+                        for field in source.GetType().GetFields(flags) do
+                            yield projectMember now field (fun () -> field.GetValue(source))
+
+                        for propertyInfo in source.GetType().GetProperties(flags) do
+                            if propertyInfo.GetIndexParameters().Length = 0 && propertyInfo.CanRead then
+                                yield projectMember now propertyInfo (fun () -> propertyInfo.GetValue(source))
+                    ]
+                    |> List.choose id
+                    |> Map.ofList
+
+                let nested =
+                    [
+                        for field in source.GetType().GetFields(flags) do
+                            yield field.GetValue(source)
+
+                        for propertyInfo in source.GetType().GetProperties(flags) do
+                            if propertyInfo.GetIndexParameters().Length = 0 && propertyInfo.CanRead then
+                                yield propertyInfo.GetValue(source)
+                    ]
+                    |> List.choose (fun value -> if canRecurse value then Some value else None)
+                    |> List.fold (fun acc value -> projectAnnotatedInternal now visited value |> Map.fold (fun map key value -> Map.add key value map) acc) current
+
+                nested
+
+    let projectAnnotated (now: DateTimeOffset option) (source: obj) =
+        projectAnnotatedInternal now (System.Collections.Generic.HashSet<int>()) source
 
     let projectMany (now: DateTimeOffset option) (sources: obj seq) =
         sources

@@ -253,7 +253,7 @@ let builderWithCache config =
             let leagueRules = LeagueRuleVariableCalculator.calculate scoringConfig input.Snapshot input.EvolvedState
             cache.UpdateLeagueSuccess(input.Snapshot, leagueRules)
             input.Position |> Option.iter cache.UpdateOcrSuccess
-            cache.UpdateRuleClock(input.LoopIteration, input.Now, input.RuntimePollMs)
+            cache.UpdateLovenseClock(input.LoopIteration, input.Now, input.RuntimePollMs)
             inner.Build input }
 
 let emptyBuilderState =
@@ -1283,7 +1283,7 @@ let ``rule input builder exposes live health and heartbeat variables`` () =
 
     let liveRules = LeagueRuleVariableCalculator.calculate scoringConfig input.Snapshot input.EvolvedState
     cache.UpdateLeagueSuccess(input.Snapshot, liveRules)
-    cache.UpdateRuleClock(input.LoopIteration, input.Now, input.RuntimePollMs)
+    cache.UpdateLovenseClock(input.LoopIteration, input.Now, input.RuntimePollMs)
 
     let variables = (RuleInputBuilder(cache) :> IRuleInputBuilder).Build emptyBuilderState input Map.empty
 
@@ -1996,7 +1996,7 @@ let ``rule command builder applies minimap stereo position modulation`` () =
             Zone = "TopLane"
             DetectionMethod = "test"
         }
-    cache.UpdateRuleClock(1L, DateTimeOffset.Parse("2026-06-13T10:00:00Z"), 500)
+    cache.UpdateLovenseClock(1L, DateTimeOffset.Parse("2026-06-13T10:00:00Z"), 500)
 
     let frame =
         builder.Build
@@ -2176,7 +2176,7 @@ let ``lol unavailable pulse is expressed as configurable rule`` () =
     let interpreter = LovenseRuleInterpreter(RuleInputBuilder(cache), RuleExpressionEvaluator())
     let builder = LovenseCommandValueBuilder(config, interpreter, cache.UpdateCommandBuilder) :> ILovenseCommandValueBuilder
     cache.UpdateLeagueFailure "lol unavailable"
-    cache.UpdateRuleClock(1L, DateTimeOffset.Parse("2026-06-13T10:00:00Z"), 100)
+    cache.UpdateLovenseClock(1L, DateTimeOffset.Parse("2026-06-13T10:00:00Z"), 100)
     let frame =
         builder.Build
             {
