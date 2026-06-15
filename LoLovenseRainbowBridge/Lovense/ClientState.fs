@@ -28,12 +28,78 @@ type LovenseSessionState =
         LatestDeviceInfo: LovenseDeviceInfo option
     }
 
-type SessionRetryPolicy =
-    | DoNotRetry
-    | RetrySocketUrlOnly
-    | RetryAuthAndSocketUrl
-
 module ClientState =
+    let initialLovenseSessionState =
+        {
+            Socket = None
+            SocketInfo = None
+            SocketConnected = false
+            SocketReadyAt = None
+            LastConnectAttemptAt = None
+            NextConnectRetryAt = None
+            LocalCommandCooldownUntil = None
+            ServerCommandCooldownUntil = None
+            StandardQrCode = None
+            QrCodeLogged = false
+            SupportedFunctions = None
+            CapabilityProfiles = []
+            GeneratedAuthToken = None
+            LatestDeviceInfo = None
+        }
+
+    let toSnapshot (session: LovenseSessionState) =
+        {
+            SocketInfo = session.SocketInfo |> Option.map (fun cached -> cached.Value)
+            SocketConnected = session.SocketConnected
+            SocketReadyAt = session.SocketReadyAt
+            LastConnectAttemptAt = session.LastConnectAttemptAt
+            NextConnectRetryAt = session.NextConnectRetryAt
+            LocalCommandCooldownUntil = session.LocalCommandCooldownUntil
+            ServerCommandCooldownUntil = session.ServerCommandCooldownUntil
+            StandardQrCode = session.StandardQrCode |> Option.map (fun cached -> cached.Value)
+            QrCodeLogged = session.QrCodeLogged
+            SupportedFunctions = session.SupportedFunctions
+            CapabilityProfiles = session.CapabilityProfiles
+            LatestDeviceInfo = session.LatestDeviceInfo
+        }
+
+    type LovenseSessionStore(initialState: LovenseSessionState, publishSnapshot: LovenseSessionSnapshot -> unit) =
+        let gate = obj()
+        let mutable state = initialState
+
+        new(publishSnapshot: LovenseSessionSnapshot -> unit) = LovenseSessionStore(initialLovenseSessionState, publishSnapshot)
+
+        member _.Read() =
+            lock gate (fun () -> state)
+
+        member _.Update(update: LovenseSessionState -> LovenseSessionState) =
+            let updated =
+                lock gate (fun () ->
+                    state <- update state
+                    state)
+
+            publishSnapshot (toSnapshot updated)
+            updated
+
+        member _.Set(updated: LovenseSessionState) =
+            let current =
+                lock gate (fun () ->
+                    state <- updated
+                    state)
+
+            publishSnapshot (toSnapshot current)
+            current
+
+        member _.Publish() =
+            lock gate (fun () -> state)
+            |> toSnapshot
+            |> publishSnapshot
+
+    type SessionRetryPolicy =
+        | DoNotRetry
+        | RetrySocketUrlOnly
+        | RetryAuthAndSocketUrl
+
     let private profileKey (profile: LovenseToyCapabilityProfile) =
         profile.ToyId
         |> Option.orElse profile.Name

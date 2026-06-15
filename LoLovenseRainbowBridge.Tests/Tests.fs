@@ -974,33 +974,14 @@ let ``lovense local command falls back instead of cold not connected`` () =
             logger
             config
             scoringConfig
-            {
-                Socket = None
-                SocketInfo = None
-                SocketConnected = false
-                SocketReadyAt = None
-                LastConnectAttemptAt = None
-                NextConnectRetryAt = None
-                LocalCommandCooldownUntil = None
-                ServerCommandCooldownUntil = None
-                StandardQrCode = None
-                QrCodeLogged = false
-                SupportedFunctions = None
-                CapabilityProfiles = []
-                GeneratedAuthToken = None
-                LatestDeviceInfo = None
-            }
-            None
-            connectGate
-            ignore
-            ignore
+            (ClientState.LovenseSessionStore(fun _ -> ()))
             ignore
             (Mapping.simpleVibratePlan config 8)
             8
             []
             CancellationToken.None
 
-    let result, _, _ = commandTask.GetAwaiter().GetResult()
+    let result = commandTask.GetAwaiter().GetResult()
 
     match result with
     | Ok response ->
@@ -1284,9 +1265,7 @@ let ``lovense live socket api e2e can fetch device info and send guarded command
             failwithf "Lovense getSocketUrl failed: %A" error
 
         let runtimeCache = RuntimeState.RuntimeStateCache()
-        let readLovenseSession () = runtimeCache.Read().LovenseSession
-        let updateLovenseSession update = runtimeCache.UpdateLovenseSession(update (runtimeCache.Read().LovenseSession))
-        use client = new LovenseClient(localLovenseConfig, scoringConfig, logger, readLovenseSession, updateLovenseSession)
+        use client = new LovenseClient(localLovenseConfig, scoringConfig, logger, runtimeCache.UpdateLovenseSession)
 
         try
             match client.EnsureConnectedAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult() with

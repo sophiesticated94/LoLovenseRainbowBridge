@@ -131,10 +131,7 @@ module Program =
 
         | Some gameId, _ ->
             let runtimeCache = RuntimeState.RuntimeStateCache()
-            let readLovenseSession () = runtimeCache.Read().LovenseSession
-            let updateLovenseSession update =
-                runtimeCache.UpdateLovenseSession(update (runtimeCache.Read().LovenseSession))
-            use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger, readLovenseSession, updateLovenseSession)
+            use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger, runtimeCache.UpdateLovenseSession)
             lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult() |> ignore
 
             match recorder with
@@ -166,10 +163,7 @@ module Program =
                     None
 
             use leagueClient = new LeagueLiveClient(config.League.BaseUrl, logger)
-            let readLovenseSession () = runtimeCache.Read().LovenseSession
-            let updateLovenseSession update =
-                runtimeCache.UpdateLovenseSession(update (runtimeCache.Read().LovenseSession))
-            use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger, readLovenseSession, updateLovenseSession)
+            use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger, runtimeCache.UpdateLovenseSession)
 
             lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult() |> ignore
 

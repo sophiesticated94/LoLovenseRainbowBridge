@@ -100,12 +100,8 @@ module ClientCommand =
         (logger: StructuredSessionLogger)
         (config: LovenseConfig)
         (scoringConfig: ScoringConfig)
-        (session: LovenseSessionState)
-        (standardCallbackServer: StandardApiCallbackServer option)
-        (connectGate: Threading.SemaphoreSlim)
+        (sessionStore: ClientState.LovenseSessionStore)
         (kickoffConnectionWarmup: unit -> unit)
-        (onDeviceInfo: LovenseDeviceInfo -> unit)
-        (onQrCode: unit -> unit)
         (plan: LovenseCommandPlan)
         (requestedValue: int)
         (ruleTraces: LovenseRuleEvaluationTrace list)
@@ -114,11 +110,11 @@ module ClientCommand =
         task {
             let safeValue = requestedValue |> Shared.clamp scoringConfig.MinIntensity scoringConfig.MaxIntensity
             let correlationId = Transport.newCorrelationId()
-            let! (updatedSession1, newCallbackServer) = ClientConnection.ensureStandardApiReadyAsync http logger config session standardCallbackServer onDeviceInfo ct
+            let currentSession = sessionStore.Read()
             let candidateActionString = LovenseActionCodec.planActionString plan
             let transportMode = config.TransportMode.ToUpperInvariant()
             let now = DateTimeOffset.UtcNow
-            let capabilityResolution = CapabilityResolver.resolve config updatedSession1.CapabilityProfiles updatedSession1.SupportedFunctions plan
+            let capabilityResolution = CapabilityResolver.resolve config currentSession.CapabilityProfiles currentSession.SupportedFunctions plan
             let filteredPlan = capabilityResolution.Plan
             let droppedActions = capabilityResolution.DroppedActions
             let actionString = LovenseActionCodec.planActionString filteredPlan
@@ -174,24 +170,23 @@ module ClientCommand =
                             DryRun = config.DryRun
                             CorrelationId = correlationId
                             SocketConnected = false
-                        }, updatedSession1, newCallbackServer)
+                        })
             else
                 let payload = createCommandPayload filteredPlan correlationId
                 let isCooldownActive (until: DateTimeOffset option) =
                     until |> Option.exists (fun value -> value > now)
 
-                let socketReady =
-                    updatedSession1.Socket
-                    |> Option.exists (fun socket -> socket.Connected)
+                let markLocalCooldown () =
+                    sessionStore.Update (fun state -> { state with LocalCommandCooldownUntil = Some(now.AddMilliseconds(float config.LocalApi.TimeoutMs)) })
+                    |> ignore
 
-                let markLocalCooldown (state: LovenseSessionState) =
-                    { state with LocalCommandCooldownUntil = Some(now.AddMilliseconds(float config.LocalApi.TimeoutMs)) }
+                let markServerCooldown () =
+                    sessionStore.Update (fun state -> { state with ServerCommandCooldownUntil = Some(now.AddMilliseconds(float config.CommandAckTimeoutMs)) })
+                    |> ignore
 
-                let markServerCooldown (state: LovenseSessionState) =
-                    { state with ServerCommandCooldownUntil = Some(now.AddMilliseconds(float config.CommandAckTimeoutMs)) }
-
-                let markSocketRetryCooldown (state: LovenseSessionState) =
-                    { state with NextConnectRetryAt = Some(now.AddMilliseconds(float config.ConnectTimeoutMs)); SocketConnected = false }
+                let markSocketRetryCooldown () =
+                    sessionStore.Update (fun state -> { state with NextConnectRetryAt = Some(now.AddMilliseconds(float config.ConnectTimeoutMs)); SocketConnected = false })
+                    |> ignore
 
                 if config.DryRun then
                     logger.Info(
@@ -215,15 +210,15 @@ module ClientCommand =
                                 DryRun = true
                                 CorrelationId = correlationId
                                 SocketConnected = false
-                            }, updatedSession1, newCallbackServer)
+                            })
                 else
-                    let sendLocalCommandAsync (currentSession: LovenseSessionState) =
-                        LocalApi.sendCommandAsync localHttp logger config.LocalApi currentSession.LatestDeviceInfo filteredPlan correlationId ct
+                    let sendLocalCommandAsync () =
+                        LocalApi.sendCommandAsync localHttp logger config.LocalApi (sessionStore.Read().LatestDeviceInfo) filteredPlan correlationId ct
 
                     let sendStandardServerCommandAsync () =
                         StandardApi.sendServerCommandAsync http logger config.Developer filteredPlan correlationId ct
 
-                    let sendViaSocket (socket: SocketIO) (currentSession: LovenseSessionState) currentCallbackServer =
+                    let sendViaSocket (socket: SocketIO) =
                         task {
                             let! emitResult = Transport.emitJsonAsync socket logger Constants.Lovense.SendToyCommandEmit payload config.CommandAckTimeoutMs ct
 
@@ -235,220 +230,167 @@ module ClientCommand =
                                     {| correlationId = correlationId; requestedValue = requestedValue; safeValue = safeValue; eventName = Constants.Lovense.SendToyCommandEmit; payload = payload; actionString = finalActionForLog; ack = ack |}
                                 )
 
-                                let updatedSession: LovenseSessionState =
-                                    { currentSession with SocketConnected = true; SocketReadyAt = Some now; NextConnectRetryAt = None }
+                                sessionStore.Update (fun state -> { state with SocketConnected = true; SocketReadyAt = Some now; NextConnectRetryAt = None })
+                                |> ignore
 
-                                return
-                                    (Ok
+                                return Ok
                                         {
                                             RequestedValue = requestedValue
                                             SafeValue = safeValue
                                             DryRun = false
                                             CorrelationId = correlationId
                                             SocketConnected = true
-                                        }, updatedSession, currentCallbackServer)
+                                        }
                             | Error error ->
-                                let updatedSession: LovenseSessionState = { currentSession with SocketConnected = false }
-                                return (Error error, updatedSession, currentCallbackServer)
+                                sessionStore.Update (fun state -> { state with SocketConnected = false }) |> ignore
+                                return Error error
                         }
 
-                    if transportMode = "STANDARDAPILOCAL" then
-                        let! localResult = sendLocalCommandAsync updatedSession1
+                    let tryFallbacks socketError =
+                        task {
+                            let currentSession = sessionStore.Read()
 
-                        match localResult with
-                        | Ok _ ->
-                            return
-                                (Ok
-                                    {
-                                        RequestedValue = requestedValue
-                                        SafeValue = safeValue
-                                        DryRun = false
-                                        CorrelationId = correlationId
-                                        SocketConnected = false
-                                    }, { updatedSession1 with LocalCommandCooldownUntil = None }, newCallbackServer)
-                        | Error localError when config.StandardApi.UseServerCommandFallback ->
-                            let! serverResult = sendStandardServerCommandAsync ()
-                            match serverResult with
-                            | Ok _ ->
-                                return
-                                    (Ok
-                                        {
-                                        RequestedValue = requestedValue
-                                        SafeValue = safeValue
-                                        DryRun = false
-                                        CorrelationId = correlationId
-                                        SocketConnected = false
-                                    }, { updatedSession1 with ServerCommandCooldownUntil = None }, newCallbackServer)
-                            | Error serverError -> return (Error serverError, markServerCooldown updatedSession1, newCallbackServer)
-                        | Error localError -> return (Error localError, markLocalCooldown updatedSession1, newCallbackServer)
-                    elif transportMode = "STANDARDAPISERVER" then
-                        let! serverResult = sendStandardServerCommandAsync ()
-                        match serverResult with
-                        | Ok _ ->
-                            return
-                                (Ok
-                                    {
-                                        RequestedValue = requestedValue
-                                        SafeValue = safeValue
-                                        DryRun = false
-                                        CorrelationId = correlationId
-                                        SocketConnected = false
-                                    }, { updatedSession1 with ServerCommandCooldownUntil = None }, newCallbackServer)
-                        | Error serverError -> return (Error serverError, markServerCooldown updatedSession1, newCallbackServer)
-                    else
-                        let tryFallbacks socketError currentSession currentCallbackServer =
-                            task {
-                                if transportMode = "AUTO" && config.StandardApi.UseServerCommandFallback && not (isCooldownActive currentSession.ServerCommandCooldownUntil) then
-                                    logger.Warn(
-                                        "lovense.socket.fallback_to_server",
-                                        "Lovense Socket API connection failed; trying Standard API server fallback.",
-                                        {|
-                                            correlationId = correlationId
-                                            socketError = string socketError
-                                            action = actionString
-                                        |}
-                                    )
+                            if transportMode = "AUTO" && config.StandardApi.UseServerCommandFallback && not (isCooldownActive currentSession.ServerCommandCooldownUntil) then
+                                logger.Warn(
+                                    "lovense.socket.fallback_to_server",
+                                    "Lovense Socket API connection failed; trying Standard API server fallback.",
+                                    {| correlationId = correlationId; socketError = string socketError; action = actionString |}
+                                )
 
-                                    let! serverResult = sendStandardServerCommandAsync ()
+                                let! serverResult = sendStandardServerCommandAsync ()
 
-                                    match serverResult with
-                                    | Ok _ ->
-                                        return
-                                            (Ok
-                                                {
-                                                    RequestedValue = requestedValue
-                                                    SafeValue = safeValue
-                                                    DryRun = false
-                                                    CorrelationId = correlationId
-                                                    SocketConnected = false
-                                                }, { currentSession with ServerCommandCooldownUntil = None }, currentCallbackServer)
-                                    | Error serverError ->
-                                        return (Error serverError, markServerCooldown currentSession, currentCallbackServer)
-                                elif transportMode = "STANDARDAPILOCAL" && config.LocalApi.EnableCommandFallback && not (isCooldownActive currentSession.LocalCommandCooldownUntil) then
-                                    logger.Warn(
-                                        "lovense.socket.fallback_to_local",
-                                        "Lovense Socket API connection failed; trying Local API command fallback.",
-                                        {|
-                                            correlationId = correlationId
-                                            socketError = string socketError
-                                            localDomain = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.Domain) |> Option.orElse config.LocalApi.Domain
-                                            localHttpsPort = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.HttpsPort) |> Option.orElse config.LocalApi.HttpsPort
-                                            localHttpPort = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.HttpPort) |> Option.orElse config.LocalApi.HttpPort
-                                            action = actionString
-                                        |}
-                                    )
+                                match serverResult with
+                                | Ok _ ->
+                                    return
+                                        Ok
+                                            {
+                                                RequestedValue = requestedValue
+                                                SafeValue = safeValue
+                                                DryRun = false
+                                                CorrelationId = correlationId
+                                                SocketConnected = false
+                                            }
+                                | Error serverError ->
+                                    markServerCooldown ()
+                                    return Error serverError
+                            elif transportMode = "STANDARDAPILOCAL" && config.LocalApi.EnableCommandFallback && not (isCooldownActive currentSession.LocalCommandCooldownUntil) then
+                                logger.Warn(
+                                    "lovense.socket.fallback_to_local",
+                                    "Lovense Socket API connection failed; trying Local API command fallback.",
+                                    {| correlationId = correlationId; socketError = string socketError; localDomain = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.Domain) |> Option.orElse config.LocalApi.Domain; localHttpsPort = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.HttpsPort) |> Option.orElse config.LocalApi.HttpsPort; localHttpPort = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.HttpPort) |> Option.orElse config.LocalApi.HttpPort; action = actionString |}
+                                )
 
-                                    let! localResult = sendLocalCommandAsync currentSession
+                                let! localResult = sendLocalCommandAsync ()
 
-                                    match localResult with
-                                    | Ok _ ->
-                                        return
-                                            (Ok
-                                                {
-                                                    RequestedValue = requestedValue
-                                                    SafeValue = safeValue
-                                                    DryRun = false
-                                                    CorrelationId = correlationId
-                                                    SocketConnected = false
-                                                }, { currentSession with LocalCommandCooldownUntil = None }, currentCallbackServer)
-                                    | Error localError when config.StandardApi.UseServerCommandFallback ->
-                                        if isCooldownActive currentSession.ServerCommandCooldownUntil then
-                                            return (Error localError, currentSession, currentCallbackServer)
-                                        else
-                                            let! serverResult = sendStandardServerCommandAsync ()
+                                match localResult with
+                                | Ok _ ->
+                                    return
+                                        Ok
+                                            {
+                                                RequestedValue = requestedValue
+                                                SafeValue = safeValue
+                                                DryRun = false
+                                                CorrelationId = correlationId
+                                                SocketConnected = false
+                                            }
+                                | Error localError when config.StandardApi.UseServerCommandFallback ->
+                                    if isCooldownActive currentSession.ServerCommandCooldownUntil then
+                                        return Error localError
+                                    else
+                                        let! serverResult = sendStandardServerCommandAsync ()
 
-                                            match serverResult with
-                                            | Ok _ ->
-                                                return
-                                                    (Ok
-                                                        {
-                                                            RequestedValue = requestedValue
-                                                            SafeValue = safeValue
-                                                            DryRun = false
-                                                            CorrelationId = correlationId
-                                                            SocketConnected = false
-                                                        }, { currentSession with ServerCommandCooldownUntil = None }, currentCallbackServer)
-                                            | Error serverError ->
-                                                return (Error serverError, markServerCooldown currentSession, currentCallbackServer)
-                                    | Error localError ->
-                                        return (Error localError, markLocalCooldown currentSession, currentCallbackServer)
-                                elif transportMode = "AUTO" && config.LocalApi.EnableCommandFallback && not (isCooldownActive currentSession.LocalCommandCooldownUntil) then
-                                    logger.Warn(
-                                        "lovense.socket.fallback_to_local",
-                                        "Lovense Socket API connection failed; trying Local API command fallback.",
-                                        {|
-                                            correlationId = correlationId
-                                            socketError = string socketError
-                                            localDomain = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.Domain) |> Option.orElse config.LocalApi.Domain
-                                            localHttpsPort = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.HttpsPort) |> Option.orElse config.LocalApi.HttpsPort
-                                            localHttpPort = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.HttpPort) |> Option.orElse config.LocalApi.HttpPort
-                                            action = actionString
-                                        |}
-                                    )
+                                        match serverResult with
+                                        | Ok _ ->
+                                            return
+                                                Ok
+                                                    {
+                                                        RequestedValue = requestedValue
+                                                        SafeValue = safeValue
+                                                        DryRun = false
+                                                        CorrelationId = correlationId
+                                                        SocketConnected = false
+                                                    }
+                                        | Error serverError ->
+                                            markServerCooldown ()
+                                            return Error serverError
+                                | Error localError ->
+                                    markLocalCooldown ()
+                                    return Error localError
+                            elif transportMode = "AUTO" && config.LocalApi.EnableCommandFallback && not (isCooldownActive currentSession.LocalCommandCooldownUntil) then
+                                logger.Warn(
+                                    "lovense.socket.fallback_to_local",
+                                    "Lovense Socket API connection failed; trying Local API command fallback.",
+                                    {| correlationId = correlationId; socketError = string socketError; localDomain = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.Domain) |> Option.orElse config.LocalApi.Domain; localHttpsPort = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.HttpsPort) |> Option.orElse config.LocalApi.HttpsPort; localHttpPort = currentSession.LatestDeviceInfo |> Option.bind (fun info -> info.HttpPort) |> Option.orElse config.LocalApi.HttpPort; action = actionString |}
+                                )
 
-                                    let! localResult = sendLocalCommandAsync currentSession
+                                let! localResult = sendLocalCommandAsync ()
 
-                                    match localResult with
-                                    | Ok _ ->
-                                        return
-                                            (Ok
-                                                {
-                                                    RequestedValue = requestedValue
-                                                    SafeValue = safeValue
-                                                    DryRun = false
-                                                    CorrelationId = correlationId
-                                                    SocketConnected = false
-                                                }, { currentSession with LocalCommandCooldownUntil = None }, currentCallbackServer)
-                                    | Error localError when config.StandardApi.UseServerCommandFallback ->
-                                        if isCooldownActive currentSession.ServerCommandCooldownUntil then
-                                            return (Error localError, currentSession, currentCallbackServer)
-                                        else
-                                            let! serverResult = sendStandardServerCommandAsync ()
+                                match localResult with
+                                | Ok _ ->
+                                    return
+                                        Ok
+                                            {
+                                                RequestedValue = requestedValue
+                                                SafeValue = safeValue
+                                                DryRun = false
+                                                CorrelationId = correlationId
+                                                SocketConnected = false
+                                            }
+                                | Error localError when config.StandardApi.UseServerCommandFallback ->
+                                    if isCooldownActive currentSession.ServerCommandCooldownUntil then
+                                        return Error localError
+                                    else
+                                        let! serverResult = sendStandardServerCommandAsync ()
 
-                                            match serverResult with
-                                            | Ok _ ->
-                                                return
-                                                    (Ok
-                                                        {
-                                                            RequestedValue = requestedValue
-                                                            SafeValue = safeValue
-                                                            DryRun = false
-                                                            CorrelationId = correlationId
-                                                            SocketConnected = false
-                                                        }, { currentSession with ServerCommandCooldownUntil = None }, currentCallbackServer)
-                                            | Error serverError ->
-                                                return (Error serverError, markServerCooldown currentSession, currentCallbackServer)
-                                    | Error localError ->
-                                        return (Error localError, markLocalCooldown currentSession, currentCallbackServer)
-                                elif transportMode = "AUTO" && config.StandardApi.UseServerCommandFallback && not (isCooldownActive currentSession.ServerCommandCooldownUntil) then
-                                    let! serverResult = sendStandardServerCommandAsync ()
+                                        match serverResult with
+                                        | Ok _ ->
+                                            return
+                                                Ok
+                                                    {
+                                                        RequestedValue = requestedValue
+                                                        SafeValue = safeValue
+                                                        DryRun = false
+                                                        CorrelationId = correlationId
+                                                        SocketConnected = false
+                                                    }
+                                        | Error serverError ->
+                                            markServerCooldown ()
+                                            return Error serverError
+                                | Error localError ->
+                                    markLocalCooldown ()
+                                    return Error localError
+                            elif transportMode = "AUTO" && config.StandardApi.UseServerCommandFallback && not (isCooldownActive currentSession.ServerCommandCooldownUntil) then
+                                let! serverResult = sendStandardServerCommandAsync ()
 
-                                    match serverResult with
-                                    | Ok _ ->
-                                        return
-                                            (Ok
-                                                {
-                                                    RequestedValue = requestedValue
-                                                    SafeValue = safeValue
-                                                    DryRun = false
-                                                    CorrelationId = correlationId
-                                                    SocketConnected = false
-                                                }, { currentSession with ServerCommandCooldownUntil = None }, currentCallbackServer)
-                                    | Error serverError ->
-                                        return (Error serverError, markServerCooldown currentSession, currentCallbackServer)
-                                else
-                                    return (Error(NotConnected socketError), currentSession, currentCallbackServer)
-                            }
+                                match serverResult with
+                                | Ok _ ->
+                                    return
+                                        Ok
+                                            {
+                                                RequestedValue = requestedValue
+                                                SafeValue = safeValue
+                                                DryRun = false
+                                                CorrelationId = correlationId
+                                                SocketConnected = false
+                                            }
+                                | Error serverError ->
+                                    markServerCooldown ()
+                                    return Error serverError
+                            else
+                                return Error(NotConnected socketError)
+                        }
 
-                        match updatedSession1.Socket with
+                    let currentSession = sessionStore.Read()
+
+                    match currentSession.Socket with
                         | Some socket when socket.Connected ->
-                            return! sendViaSocket socket updatedSession1 newCallbackServer
+                            return! sendViaSocket socket
                         | _ ->
-                            if not (isCooldownActive updatedSession1.NextConnectRetryAt) then
+                            if not (isCooldownActive currentSession.NextConnectRetryAt) then
                                 kickoffConnectionWarmup()
                             if transportMode = "SOCKETAPI" then
-                                return (Error(NotConnected(SocketDisconnected "Socket was not available before command emit.")), updatedSession1, newCallbackServer)
+                                return Error(NotConnected(SocketDisconnected "Socket was not available before command emit."))
                             else
-                                return! tryFallbacks (SocketDisconnected "Socket was not available before command emit.") updatedSession1 newCallbackServer
+                                return! tryFallbacks (SocketDisconnected "Socket was not available before command emit.")
         }
 

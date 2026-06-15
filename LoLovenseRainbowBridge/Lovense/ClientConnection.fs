@@ -7,8 +7,9 @@ open LoLovenseRainbowBridge
 open SocketIOClient
 
 module ClientConnection =
-    let private resolveAuthTokenAsync (http: System.Net.Http.HttpClient) (logger: StructuredSessionLogger) (config: LovenseConfig) (session: LovenseSessionState) forceRefresh (ct: CancellationToken) =
+    let private resolveAuthTokenAsync (http: System.Net.Http.HttpClient) (logger: StructuredSessionLogger) (config: LovenseConfig) (sessionStore: ClientState.LovenseSessionStore) forceRefresh (ct: CancellationToken) =
         task {
+            let session = sessionStore.Read()
             match session.GeneratedAuthToken, forceRefresh with
             | Some cached, false when not (String.IsNullOrWhiteSpace cached.Value) ->
                 logger.Debug(
@@ -17,7 +18,7 @@ module ClientConnection =
                     {| acquiredAt = cached.AcquiredAt; authToken = Constants.Lovense.AuthTokenRedacted |}
                 )
 
-                return (Ok cached.Value, session)
+                return Ok cached.Value
 
             | _ ->
                 logger.Info(
@@ -31,7 +32,7 @@ module ClientConnection =
                 match tokenResult with
                 | Ok authToken ->
                     let acquiredAt = DateTimeOffset.UtcNow
-                    let updatedSession = { session with GeneratedAuthToken = Some { Value = authToken; AcquiredAt = acquiredAt } }
+                    sessionStore.Update (fun current -> { current with GeneratedAuthToken = Some { Value = authToken; AcquiredAt = acquiredAt } }) |> ignore
 
                     logger.Info(
                         "lovense.auth.refresh",
@@ -39,13 +40,14 @@ module ClientConnection =
                         {| acquiredAt = acquiredAt; authToken = Constants.Lovense.AuthTokenRedacted |}
                     )
 
-                    return (Ok authToken, updatedSession)
+                    return Ok authToken
                 | Error error ->
-                    return (Error error, session)
+                    return Error error
         }
 
-    let private resolveSocketUrlAsync (http: System.Net.Http.HttpClient) (logger: StructuredSessionLogger) (config: LovenseConfig) (session: LovenseSessionState) authToken forceRefresh (ct: CancellationToken) =
+    let private resolveSocketUrlAsync (http: System.Net.Http.HttpClient) (logger: StructuredSessionLogger) (config: LovenseConfig) (sessionStore: ClientState.LovenseSessionStore) authToken forceRefresh (ct: CancellationToken) =
         task {
+            let session = sessionStore.Read()
             match session.SocketInfo, forceRefresh with
             | Some cached, false ->
                 logger.Debug(
@@ -54,7 +56,7 @@ module ClientConnection =
                     {| acquiredAt = cached.AcquiredAt; socketIoUrl = Shared.redactUrlSecrets cached.Value.SocketIoUrl; socketIoPath = cached.Value.SocketIoPath |}
                 )
 
-                return (Ok cached.Value, session)
+                return Ok cached.Value
 
             | _ ->
                 logger.Info(
@@ -67,10 +69,10 @@ module ClientConnection =
 
                 match socketUrlResult with
                 | Error error ->
-                    return (Error error, session)
+                    return Error error
                 | Ok info ->
                     let acquiredAt = DateTimeOffset.UtcNow
-                    let updatedSession = { session with SocketInfo = Some { Value = info; AcquiredAt = acquiredAt } }
+                    sessionStore.Update (fun current -> { current with SocketInfo = Some { Value = info; AcquiredAt = acquiredAt } }) |> ignore
 
                     logger.Info(
                         "lovense.socket_url.refresh",
@@ -78,10 +80,10 @@ module ClientConnection =
                         {| acquiredAt = acquiredAt; socketIoUrl = Shared.redactUrlSecrets info.SocketIoUrl; socketIoPath = info.SocketIoPath |}
                     )
 
-                    return (Ok info, updatedSession)
+                    return Ok info
         }
 
-    let ensureStandardApiReadyAsync (http: System.Net.Http.HttpClient) (logger: StructuredSessionLogger) (config: LovenseConfig) (session: LovenseSessionState) (standardCallbackServer: StandardApiCallbackServer option) (onDeviceInfo: LovenseDeviceInfo -> unit) (ct: CancellationToken) =
+    let ensureStandardApiReadyAsync (http: System.Net.Http.HttpClient) (logger: StructuredSessionLogger) (config: LovenseConfig) (sessionStore: ClientState.LovenseSessionStore) (standardCallbackServer: StandardApiCallbackServer option) (onDeviceInfo: LovenseDeviceInfo -> unit) (ct: CancellationToken) =
         task {
             if config.StandardApi.Enable then
                 let newCallbackServer =
@@ -89,130 +91,136 @@ module ClientConnection =
                     | Some server -> Some server
                     | None -> StandardApi.startCallbackListener logger config.StandardApi config.Developer onDeviceInfo
 
+                let session = sessionStore.Read()
+
                 if config.StandardApi.GenerateQrOnStartup && session.StandardQrCode.IsNone then
                     let! qrResult = StandardApi.requestQrCodeAsync http logger config.StandardApi config.Developer ct
 
                     match qrResult with
                     | Ok qrInfo ->
-                        let finalSession = { session with StandardQrCode = Some { Value = qrInfo; AcquiredAt = DateTimeOffset.UtcNow } }
+                        sessionStore.Update (fun current -> { current with StandardQrCode = Some { Value = qrInfo; AcquiredAt = DateTimeOffset.UtcNow } }) |> ignore
                         printfn "Lovense Standard API pairing code: %s" qrInfo.Code
                         printfn "Lovense Standard API QR: %s" qrInfo.Qr
-                        return (finalSession, newCallbackServer)
+                        return newCallbackServer
                     | Error error ->
                         logger.Warn(
                             "lovense.standard.prepare_failed",
                             "Lovense Standard API QR/code preparation failed.",
                             {| error = string error |}
                         )
-                        return (session, newCallbackServer)
+                        return newCallbackServer
                 else
-                    return (session, newCallbackServer)
+                    return newCallbackServer
             else
-                return (session, standardCallbackServer)
+                return standardCallbackServer
         }
 
-    let ensureConnectedAsync (http: System.Net.Http.HttpClient) (logger: StructuredSessionLogger) (config: LovenseConfig) (session: LovenseSessionState) (standardCallbackServer: StandardApiCallbackServer option) (connectGate: Threading.SemaphoreSlim) (onDeviceInfo: LovenseDeviceInfo -> unit) (onQrCode: unit -> unit) (ct: CancellationToken) =
+    let ensureConnectedAsync (http: System.Net.Http.HttpClient) (logger: StructuredSessionLogger) (config: LovenseConfig) (sessionStore: ClientState.LovenseSessionStore) (standardCallbackServer: StandardApiCallbackServer option) (connectGate: Threading.SemaphoreSlim) (onDeviceInfo: LovenseDeviceInfo -> unit) (onQrCode: unit -> unit) (ct: CancellationToken) =
         task {
             if config.DryRun then
-                return
-                    (Ok
+                return Ok
                         {
                             Connected = false
                             DryRun = true
                             SocketIoUrl = None
                             SocketIoPath = None
                             SocketId = None
-                        }, session, standardCallbackServer)
+                        }
             else
+                let session = sessionStore.Read()
+
                 match session.Socket with
                 | Some client when client.Connected ->
                     return
-                        (Ok
+                        Ok
                             {
                                 Connected = true
                                 DryRun = false
                                 SocketIoUrl = session.SocketInfo |> Option.map (fun cached -> cached.Value.SocketIoUrl)
                                 SocketIoPath = session.SocketInfo |> Option.map (fun cached -> cached.Value.SocketIoPath)
                                 SocketId = if String.IsNullOrWhiteSpace client.Id then None else Some client.Id
-                            }, session, standardCallbackServer)
+                            }
 
                 | _ ->
                     do! connectGate.WaitAsync(ct)
 
                     try
-                        let connectOnce forceAuthRefresh forceSocketUrlRefresh (currentSession: LovenseSessionState) =
+                        let connectOnce forceAuthRefresh forceSocketUrlRefresh =
                             task {
                                 let startedAt = DateTimeOffset.UtcNow
-                                let currentSession: LovenseSessionState = { currentSession with LastConnectAttemptAt = Some startedAt }
-                                let! (authTokenResult, updatedSession1) = resolveAuthTokenAsync http logger config currentSession forceAuthRefresh ct
+                                sessionStore.Update (fun current -> { current with LastConnectAttemptAt = Some startedAt }) |> ignore
+                                let! authTokenResult = resolveAuthTokenAsync http logger config sessionStore forceAuthRefresh ct
 
                                 match authTokenResult with
                                 | Error error ->
                                     let retryAt = Some(startedAt.AddMilliseconds(float config.ConnectTimeoutMs))
-                                    let updatedSession = { updatedSession1 with SocketConnected = false; NextConnectRetryAt = retryAt }
-                                    return (Error error, updatedSession)
+                                    sessionStore.Update (fun current -> { current with SocketConnected = false; NextConnectRetryAt = retryAt }) |> ignore
+                                    return Error error
 
                                 | Ok authToken ->
-                                    let! (socketUrlResult, updatedSession2) = resolveSocketUrlAsync http logger config updatedSession1 authToken forceSocketUrlRefresh ct
+                                    let! socketUrlResult = resolveSocketUrlAsync http logger config sessionStore authToken forceSocketUrlRefresh ct
 
                                     match socketUrlResult with
                                     | Error error ->
                                         let retryAt = Some(startedAt.AddMilliseconds(float config.ConnectTimeoutMs))
-                                        let updatedSession = { updatedSession2 with SocketConnected = false; NextConnectRetryAt = retryAt }
-                                        return (Error error, updatedSession)
+                                        sessionStore.Update (fun current -> { current with SocketConnected = false; NextConnectRetryAt = retryAt }) |> ignore
+                                        return Error error
 
                                     | Ok info ->
                                         let! connectedResult = SocketRuntime.connectAsync config logger onDeviceInfo onQrCode info ct
 
                                         match connectedResult with
                                         | Ok (client, state) ->
-                                            let finalSession =
+                                            sessionStore.Update (fun current ->
                                                 {
-                                                    updatedSession2 with
+                                                    current with
                                                         Socket = Some client
                                                         SocketConnected = true
                                                         SocketReadyAt = Some DateTimeOffset.UtcNow
                                                         LastConnectAttemptAt = Some startedAt
                                                         NextConnectRetryAt = None
-                                                }
-                                            return (Ok state, finalSession)
+                                                })
+                                            |> ignore
+                                            return Ok state
                                         | Error error ->
                                             let retryAt = Some(startedAt.AddMilliseconds(float config.ConnectTimeoutMs))
-                                            let updatedSession = { updatedSession2 with SocketConnected = false; NextConnectRetryAt = retryAt }
-                                            return (Error error, updatedSession)
+                                            sessionStore.Update (fun current -> { current with SocketConnected = false; NextConnectRetryAt = retryAt }) |> ignore
+                                            return Error error
                             }
+
+                        let session = sessionStore.Read()
 
                         match session.Socket with
                         | Some client when client.Connected ->
                             return
-                                (Ok
+                                Ok
                                     {
                                         Connected = true
                                         DryRun = false
                                         SocketIoUrl = session.SocketInfo |> Option.map (fun cached -> cached.Value.SocketIoUrl)
                                         SocketIoPath = session.SocketInfo |> Option.map (fun cached -> cached.Value.SocketIoPath)
                                         SocketId = if String.IsNullOrWhiteSpace client.Id then None else Some client.Id
-                                    }, session, standardCallbackServer)
+                                    }
 
                         | _ ->
-                            let! (firstAttempt, updatedSession1) = connectOnce false false session
+                            let! firstAttempt = connectOnce false false
 
                             match firstAttempt with
                             | Ok state ->
-                                return (Ok state, updatedSession1, standardCallbackServer)
+                                return Ok state
 
                             | Error error ->
                                 match ClientState.retryPolicyFor error with
                                 | DoNotRetry ->
-                                    return (Error error, updatedSession1, standardCallbackServer)
+                                    return Error error
                                 | RetrySocketUrlOnly ->
-                                    let updatedSession2 = ClientState.invalidateSocketUrl (string error) updatedSession1 logger
-                                    let! (secondAttempt, finalSession) = connectOnce false true updatedSession2
-                                    return (secondAttempt, finalSession, standardCallbackServer)
+                                    sessionStore.Update (fun current -> ClientState.invalidateSocketUrl (string error) current logger) |> ignore
+                                    let! secondAttempt = connectOnce false true
+                                    return secondAttempt
                                 | RetryAuthAndSocketUrl ->
-                                    let updatedSession2 = ClientState.invalidateAuthAndSocketUrl (string error) updatedSession1 logger
-                                    let! (secondAttempt, finalSession) = connectOnce true true updatedSession2
-                                    return (secondAttempt, finalSession, standardCallbackServer)
+                                    sessionStore.Update (fun current -> ClientState.invalidateAuthAndSocketUrl (string error) current logger) |> ignore
+                                    let! secondAttempt = connectOnce true true
+                                    return secondAttempt
 
                     finally
                         connectGate.Release() |> ignore
