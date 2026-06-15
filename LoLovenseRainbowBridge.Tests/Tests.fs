@@ -2195,25 +2195,38 @@ let ``lovense command builder creates changed plan only for function diffs`` () 
     Assert.Empty(secondFrame.ChangedFunctionState)
 
 [<Fact>]
-let ``lol unavailable pulse is expressed as configurable rule`` () =
+let ``lol unavailable arpeggio is expressed as cyclic configurable rules`` () =
     let config =
         {
             ruleEngineLovenseConfig with
                 Mapping =
                     {
                         ruleEngineLovenseConfig.Mapping with
-                            FunctionProfiles = [ functionProfile "Vibrate" true ]
+                            FunctionProfiles =
+                                [
+                                    functionProfile "Vibrate1" true
+                                    functionProfile "Vibrate2" true
+                                ]
                             Rules =
                                 [
                                     functionRule
-                                        "lol-unavailable-pulse"
+                                        "lol-unavailable-arpeggio1"
                                         "Effect"
                                         ""
                                         "LolDataAcquired == 0"
-                                        "Vibrate"
+                                        "Vibrate1"
                                         "Effect"
                                         "Set"
-                                        "10 + Ceiling(Sin(LolUnavailableElapsedMs / 10000.0)) * 5"
+                                        "Min(FunctionMax_Vibrate1, 20 - Abs(Mod(Floor(LolUnavailableElapsedMs / 1000.0), 40) - 20))"
+                                    functionRule
+                                        "lol-unavailable-arpeggio2"
+                                        "Effect"
+                                        ""
+                                        "LolDataAcquired == 0"
+                                        "Vibrate2"
+                                        "Effect"
+                                        "Set"
+                                        "Min(FunctionMax_Vibrate2, Abs(Mod(Floor(LolUnavailableElapsedMs / 1000.0), 40) - 20))"
                                 ]
                     }
         }
@@ -2222,21 +2235,39 @@ let ``lol unavailable pulse is expressed as configurable rule`` () =
     let interpreter = LovenseRuleInterpreter(RuleInputBuilder(cache), RuleExpressionEvaluator())
     let builder = LovenseCommandValueBuilder(config, interpreter, cache.UpdateCommandBuilder) :> ILovenseCommandValueBuilder
     cache.UpdateLeagueFailure "lol unavailable"
-    cache.UpdateLovenseClock(1L, DateTimeOffset.Parse("2026-06-13T10:00:00Z"), 100)
-    let frame =
+
+    let buildAt elapsedMs iteration =
+        let now = DateTimeOffset.Parse("2026-06-13T10:00:00Z").AddMilliseconds(float elapsedMs)
+        cache.UpdateLovenseClock(iteration, now, 100)
+
         builder.Build
             {
                 PreviousState = initialState
                 Snapshot = snapshot (Some(1000.0, 1000.0)) []
                 EvolvedState = initialState
                 Position = None
-                Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
-                LoopIteration = 1L
+                Now = now
+                LoopIteration = iteration
                 LastSentFunctionState = LovenseActionCodec.emptyState
                 RuntimePollMs = 100
-        }
+            }
 
-    Assert.Contains(frame.ActionString, [ "Vibrate:10"; "Vibrate:15" ])
+    let frame0 = buildAt 0L 1L
+    let frame10 = buildAt 10000L 2L
+    let frame20 = buildAt 20000L 3L
+    let frame21 = buildAt 21000L 4L
+    let frame40 = buildAt 40000L 5L
+
+    Assert.Equal(0, frame0.FunctionStates[Vibrate1].Final)
+    Assert.Equal(20, frame0.FunctionStates[Vibrate2].Final)
+    Assert.Equal(10, frame10.FunctionStates[Vibrate1].Final)
+    Assert.Equal(10, frame10.FunctionStates[Vibrate2].Final)
+    Assert.Equal(20, frame20.FunctionStates[Vibrate1].Final)
+    Assert.Equal(0, frame20.FunctionStates[Vibrate2].Final)
+    Assert.Equal(19, frame21.FunctionStates[Vibrate1].Final)
+    Assert.Equal(1, frame21.FunctionStates[Vibrate2].Final)
+    Assert.Equal(0, frame40.FunctionStates[Vibrate1].Final)
+    Assert.Equal(20, frame40.FunctionStates[Vibrate2].Final)
 
 [<Fact>]
 let ``sqlite recorder opens closes and skips unchanged slices`` () =
