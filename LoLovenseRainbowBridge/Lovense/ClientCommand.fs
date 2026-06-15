@@ -217,13 +217,13 @@ module ClientCommand =
                                 SocketConnected = false
                             }, updatedSession1, newCallbackServer)
                 else
-                    let sendLocalCommandAsync currentSession =
+                    let sendLocalCommandAsync (currentSession: LovenseSessionState) =
                         LocalApi.sendCommandAsync localHttp logger config.LocalApi currentSession.LatestDeviceInfo filteredPlan correlationId ct
 
                     let sendStandardServerCommandAsync () =
                         StandardApi.sendServerCommandAsync http logger config.Developer filteredPlan correlationId ct
 
-                    let sendViaSocket (socket: SocketIO) currentSession currentCallbackServer =
+                    let sendViaSocket (socket: SocketIO) (currentSession: LovenseSessionState) currentCallbackServer =
                         task {
                             let! emitResult = Transport.emitJsonAsync socket logger Constants.Lovense.SendToyCommandEmit payload config.CommandAckTimeoutMs ct
 
@@ -235,6 +235,9 @@ module ClientCommand =
                                     {| correlationId = correlationId; requestedValue = requestedValue; safeValue = safeValue; eventName = Constants.Lovense.SendToyCommandEmit; payload = payload; actionString = finalActionForLog; ack = ack |}
                                 )
 
+                                let updatedSession: LovenseSessionState =
+                                    { currentSession with SocketConnected = true; SocketReadyAt = Some now; NextConnectRetryAt = None }
+
                                 return
                                     (Ok
                                         {
@@ -243,9 +246,10 @@ module ClientCommand =
                                             DryRun = false
                                             CorrelationId = correlationId
                                             SocketConnected = true
-                                        }, { currentSession with SocketConnected = true; SocketReadyAt = Some now; NextConnectRetryAt = None }, currentCallbackServer)
+                                        }, updatedSession, currentCallbackServer)
                             | Error error ->
-                                return (Error error, { currentSession with SocketConnected = false }, currentCallbackServer)
+                                let updatedSession: LovenseSessionState = { currentSession with SocketConnected = false }
+                                return (Error error, updatedSession, currentCallbackServer)
                         }
 
                     if transportMode = "STANDARDAPILOCAL" then

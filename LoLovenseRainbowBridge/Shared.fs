@@ -42,6 +42,82 @@ module Shared =
 
 module Json =
 
+    let tryValue<'T> (node: JsonNode) : 'T option =
+        match node with
+        | null -> None
+        | :? JsonValue as value ->
+            let mutable typed = Unchecked.defaultof<'T>
+
+            if value.TryGetValue<'T>(&typed) then
+                Some typed
+            else
+                None
+        | _ ->
+            None
+
+    let tryStringValue (node: JsonNode) : string option =
+        tryValue<string> node
+
+    let tryIntValue (node: JsonNode) : int option =
+        match tryValue<int> node with
+        | Some parsed -> Some parsed
+        | None ->
+            match tryValue<int64> node with
+            | Some parsed -> Some(int parsed)
+            | None ->
+                match tryValue<float> node with
+                | Some parsed -> Some(int parsed)
+                | None ->
+                    match tryValue<double> node with
+                    | Some parsed -> Some(int parsed)
+                    | None ->
+                        match tryValue<string> node with
+                        | Some text when Int32.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture) |> fst ->
+                            Some(Int32.Parse(text, NumberStyles.Integer, CultureInfo.InvariantCulture))
+                        | Some text ->
+                            match Double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture) with
+                            | true, parsed -> Some(int parsed)
+                            | false, _ -> None
+                        | None -> None
+
+    let tryFloatValue (node: JsonNode) : float option =
+        match tryValue<float> node with
+        | Some parsed -> Some parsed
+        | None ->
+            match tryValue<double> node with
+            | Some parsed -> Some parsed
+            | None ->
+                match tryValue<int> node with
+                | Some parsed -> Some(float parsed)
+                | None ->
+                    match tryValue<int64> node with
+                    | Some parsed -> Some(float parsed)
+                    | None ->
+                        match tryValue<string> node with
+                        | Some text when Double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture) |> fst ->
+                            Some(Double.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture))
+                        | _ -> None
+
+    let tryBoolValue (node: JsonNode) : bool option =
+        match tryValue<bool> node with
+        | Some parsed -> Some parsed
+        | None ->
+            match tryValue<int64> node with
+            | Some 0L -> Some false
+            | Some 1L -> Some true
+            | Some parsed -> Some(parsed <> 0L)
+            | None ->
+                match tryValue<string> node with
+                | Some text when String.Equals(text, "true", StringComparison.OrdinalIgnoreCase) -> Some true
+                | Some text when String.Equals(text, "false", StringComparison.OrdinalIgnoreCase) -> Some false
+                | Some text ->
+                    match Int64.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture) with
+                    | true, 0L -> Some false
+                    | true, 1L -> Some true
+                    | true, parsed -> Some(parsed <> 0L)
+                    | false, _ -> None
+                | None -> None
+
     let tryGet (name: string) (node: JsonNode) : JsonNode option =
         if isNull node then
             None
@@ -54,37 +130,19 @@ module Json =
 
     let tryString (name: string) (node: JsonNode) : string option =
         tryGet name node
-        |> Option.bind (fun value ->
-            try Some(value.GetValue<string>())
-            with _ -> None)
+        |> Option.bind tryStringValue
 
     let tryInt (name: string) (node: JsonNode) : int option =
         tryGet name node
-        |> Option.bind (fun value ->
-            try
-                Some(value.GetValue<int>())
-            with _ ->
-                try
-                    Some(value.GetValue<float>() |> int)
-                with _ ->
-                    try
-                        Some(value.GetValue<double>() |> int)
-                    with _ ->
-                        None)
+        |> Option.bind tryIntValue
 
     let tryFloat (name: string) (node: JsonNode) : float option =
         tryGet name node
-        |> Option.bind (fun value ->
-            try
-                Some(value.GetValue<float>())
-            with _ ->
-                try
-                    Some(value.GetValue<double>())
-                with _ ->
-                    try
-                        Some(value.GetValue<int>() |> float)
-                    with _ ->
-                        None)
+        |> Option.bind tryFloatValue
+
+    let tryBool (name: string) (node: JsonNode) : bool option =
+        tryGet name node
+        |> Option.bind tryBoolValue
 
     let arrayItems (node: JsonNode) : JsonNode list =
         try

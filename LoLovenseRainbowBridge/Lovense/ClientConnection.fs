@@ -140,10 +140,10 @@ module ClientConnection =
                     do! connectGate.WaitAsync(ct)
 
                     try
-                        let connectOnce forceAuthRefresh forceSocketUrlRefresh currentSession =
+                        let connectOnce forceAuthRefresh forceSocketUrlRefresh (currentSession: LovenseSessionState) =
                             task {
                                 let startedAt = DateTimeOffset.UtcNow
-                                let currentSession = { currentSession with LastConnectAttemptAt = Some startedAt }
+                                let currentSession: LovenseSessionState = { currentSession with LastConnectAttemptAt = Some startedAt }
                                 let! (authTokenResult, updatedSession1) = resolveAuthTokenAsync http logger config currentSession forceAuthRefresh ct
 
                                 match authTokenResult with

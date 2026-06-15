@@ -550,6 +550,36 @@ let ``lovense device info parser extracts per toy explicit functions`` () =
     Assert.True(profile.StereoVibrationSupported)
 
 [<Fact>]
+let ``lovense device info parser accepts string scalar fields without exceptions`` () =
+    let raw =
+        """
+        {
+          "domain": "192.168.0.110",
+          "httpsPort": "30010",
+          "httpPort": "20010",
+          "wssPort": "31010",
+          "toyList": [
+            {
+              "id": "toy-1",
+              "name": "Ferri",
+              "battery": "77",
+              "connected": 0
+            }
+          ]
+        }
+        """
+
+    let deviceInfo = DeviceInfo.parse raw
+    let toy = Assert.Single(deviceInfo.ToyList)
+
+    Assert.Equal(Some "192.168.0.110", deviceInfo.Domain)
+    Assert.Equal(Some 30010, deviceInfo.HttpsPort)
+    Assert.Equal(Some 20010, deviceInfo.HttpPort)
+    Assert.Equal(Some 31010, deviceInfo.WssPort)
+    Assert.Equal(Some 77, toy.Battery)
+    Assert.Equal(Some false, toy.Connected)
+
+[<Fact>]
 let ``lovense local get toys parser handles toys json string`` () =
     let raw =
         """
@@ -569,6 +599,24 @@ let ``lovense local get toys parser handles toys json string`` () =
     Assert.True(profile.ExplicitFunctions.Contains("Vibrate1"))
     Assert.True(profile.ExplicitFunctions.Contains("Vibrate2"))
     Assert.True(profile.StereoVibrationSupported)
+
+[<Fact>]
+let ``lovense local get toys parser accepts numeric string fields`` () =
+    let raw =
+        """
+        {
+          "code": 200,
+          "data": {
+            "toys": "{\"toy-1\":{\"id\":\"toy-1\",\"name\":\"Ferri\",\"status\":0,\"battery\":\"77\",\"version\":\"1.0\",\"shortFunctionNames\":[\"Vibrate\"],\"fullFunctionNames\":[\"Vibrate\"]}}"
+          }
+        }
+        """
+
+    let parsed = DeviceInfo.parseGetToys raw
+    let toy = Assert.Single(parsed.ToyList)
+
+    Assert.Equal(Some 77, toy.Battery)
+    Assert.Equal(Some false, toy.Connected)
 
 [<Fact>]
 let ``lovense local get toys parser handles toys object`` () =
@@ -719,7 +767,7 @@ let ``lovense local get toys client posts command and parses response`` () =
         Assert.True(profile.StereoVibrationSupported)
 
 [<Fact>]
-let ``lovense local get toys uses a single selected endpoint`` () =
+let ``lovense local get toys prefers https and uses a single selected endpoint`` () =
     let requestedUrls = ResizeArray<string>()
 
     use handler =
@@ -742,7 +790,7 @@ let ``lovense local get toys uses a single selected endpoint`` () =
                 } }
 
     use http = new HttpClient(handler)
-    use logger = new StructuredSessionLogger(loggingConfig (tempPath "local-api-http-fallback-logs"))
+    use logger = new StructuredSessionLogger(loggingConfig (tempPath "local-api-https-preferred-logs"))
     let localConfig =
         {
             EnableGetToys = true
@@ -767,13 +815,15 @@ let ``lovense local get toys uses a single selected endpoint`` () =
             WssPort = None
         }
 
+    let endpointUrl = LocalApi.getToysEndpointUrls localConfig (Some deviceInfo) |> List.head
+
     let result =
-        LocalApi.getToysAsync http logger localConfig deviceInfo "https://192-168-0-110.lovense.club:30010/command" CancellationToken.None
+        LocalApi.getToysAsync http logger localConfig deviceInfo endpointUrl CancellationToken.None
         |> fun task -> task.GetAwaiter().GetResult()
 
     match result with
     | Error error ->
-        failwithf "Expected HTTP fallback GetToys to succeed, got %A" error
+        failwithf "Expected preferred HTTPS GetToys to succeed, got %A" error
     | Ok parsed ->
         Assert.Equal(1, requestedUrls.Count)
         Assert.Equal("https://192-168-0-110.lovense.club:30010/command", requestedUrls[0])
@@ -819,8 +869,10 @@ let ``lovense local get toys timeout surfaces the selected endpoint error`` () =
             WssPort = None
         }
 
+    let endpointUrl = LocalApi.getToysEndpointUrls localConfig (Some deviceInfo) |> List.head
+
     let result =
-        LocalApi.getToysAsync http logger localConfig deviceInfo "https://192-168-0-110.lovense.club:30010/command" CancellationToken.None
+        LocalApi.getToysAsync http logger localConfig deviceInfo endpointUrl CancellationToken.None
         |> fun task -> task.GetAwaiter().GetResult()
 
     match result with

@@ -24,62 +24,13 @@ module DeviceInfo =
                 Constants.Lovense.StopAction
             ]
 
-    let private tryBoolByNames names (node: JsonNode) =
+    let private tryByNames reader names (node: JsonNode) =
         names
-        |> List.tryPick (fun name ->
-            Json.tryGet name node
-            |> Option.bind (fun value ->
-                try Some(value.GetValue<bool>())
-                with _ ->
-                    try
-                        match value.GetValue<int64>() with
-                        | 0L -> Some false
-                        | 1L -> Some true
-                        | number -> Some(number <> 0L)
-                    with _ ->
-                        try
-                            match value.GetValue<string>() with
-                            | text when String.Equals(text, "true", StringComparison.OrdinalIgnoreCase) -> Some true
-                            | text when String.Equals(text, "false", StringComparison.OrdinalIgnoreCase) -> Some false
-                            | text ->
-                                match Int64.TryParse(text) with
-                                | true, 0L -> Some false
-                                | true, 1L -> Some true
-                                | true, number -> Some(number <> 0L)
-                                | false, _ -> None
-                        with _ ->
-                            None))
+        |> List.tryPick (fun name -> Json.tryGet name node |> Option.bind reader)
 
-    let private tryStringByNames names (node: JsonNode) =
-        names |> List.tryPick (fun name -> Json.tryString name node)
-
-    let private tryIntByNames names (node: JsonNode) =
-        names |> List.tryPick (fun name -> Json.tryInt name node)
-
-    let private tryStringNode (node: JsonNode) =
-        if isNull node then
-            None
-        else
-            try
-                Some(node.GetValue<string>())
-            with _ ->
-                None
-
-    let private tryIntNode (node: JsonNode) =
-        if isNull node then
-            None
-        else
-            try
-                Some(node.GetValue<int>())
-            with _ ->
-                try
-                    match node.GetValue<string>() with
-                    | text ->
-                        match Int32.TryParse(text) with
-                        | true, value -> Some value
-                        | false, _ -> None
-                with _ ->
-                    None
+    let private tryStringByNames = tryByNames Json.tryStringValue
+    let private tryIntByNames = tryByNames Json.tryIntValue
+    let private tryBoolByNames = tryByNames Json.tryBoolValue
 
     let private findArrayByName name (root: JsonNode) =
         let rec find (node: JsonNode) =
@@ -199,11 +150,10 @@ module DeviceInfo =
                         let toysNode =
                             match toysNode with
                             | :? JsonValue as value ->
-                                try
-                                    let text = value.GetValue<string>()
-                                    if String.IsNullOrWhiteSpace text then toysNode else JsonNode.Parse(text)
-                                with _ ->
-                                    toysNode
+                                match Json.tryStringValue value with
+                                | Some text when not (String.IsNullOrWhiteSpace text) ->
+                                    try JsonNode.Parse(text) with _ -> toysNode
+                                | _ -> toysNode
                             | _ ->
                                 toysNode
 
@@ -225,11 +175,10 @@ module DeviceInfo =
                     let toysNode =
                         match toysNode with
                         | :? JsonValue as value ->
-                            try
-                                let text = value.GetValue<string>()
-                                if String.IsNullOrWhiteSpace text then toysNode else JsonNode.Parse(text)
-                            with _ ->
-                                toysNode
+                            match Json.tryStringValue value with
+                            | Some text when not (String.IsNullOrWhiteSpace text) ->
+                                try JsonNode.Parse(text) with _ -> toysNode
+                            | _ -> toysNode
                         | _ ->
                             toysNode
 
@@ -338,10 +287,10 @@ module DeviceInfo =
             ToyList = toyList
             CapabilityProfiles = capabilityProfiles
             SupportedFunctions = supportedFunctions
-            Domain = if isNull root then None else findValueByName "domain" root |> Option.bind tryStringNode
-            HttpsPort = if isNull root then None else findValueByName "httpsPort" root |> Option.bind tryIntNode
-            HttpPort = if isNull root then None else findValueByName "httpPort" root |> Option.bind tryIntNode
-            WssPort = if isNull root then None else findValueByName "wssPort" root |> Option.bind tryIntNode
+            Domain = if isNull root then None else findValueByName "domain" root |> Option.bind Json.tryStringValue
+            HttpsPort = if isNull root then None else findValueByName "httpsPort" root |> Option.bind Json.tryIntValue
+            HttpPort = if isNull root then None else findValueByName "httpPort" root |> Option.bind Json.tryIntValue
+            WssPort = if isNull root then None else findValueByName "wssPort" root |> Option.bind Json.tryIntValue
         }
 
     let parseGetToys (rawText: string) =

@@ -95,7 +95,7 @@ module Transport =
                 for name, value in headers do
                     request.Headers.TryAddWithoutValidation(name, value) |> ignore
 
-                let! response = http.SendAsync(request, ct)
+                let! response = http.SendAsync(request)
                 let! responseBody = response.Content.ReadAsStringAsync(ct)
                 let statusCode = int response.StatusCode
 

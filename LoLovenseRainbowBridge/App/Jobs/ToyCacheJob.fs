@@ -50,21 +50,44 @@ type ToyCacheJob
                 }
         | _ -> None
 
-    let chooseGetToysEndpoint now (toyState: RuntimeState.ToyCacheState) endpoints =
+    let chooseGetToysEndpoint now (toyState: RuntimeState.ToyCacheState) (endpoints: string list) =
+        let isFailed (endpoint: string) =
+            toyState.LastFailedGetToysEndpoint
+            |> Option.exists (fun failed -> String.Equals(failed, endpoint, StringComparison.OrdinalIgnoreCase))
+
+        let priority (endpoint: string) =
+            if endpoint.StartsWith("https://", StringComparison.OrdinalIgnoreCase) then
+                0
+            elif endpoint.StartsWith("http://", StringComparison.OrdinalIgnoreCase) then
+                1
+            else
+                2
+
+        let validEndpoints =
+            endpoints
+            |> List.filter (fun endpoint -> not (isFailed endpoint))
+
         let preferredValid =
             match toyState.PreferredGetToysEndpoint, toyState.PreferredGetToysEndpointExpiresAt with
-            | Some endpoint, Some expiresAt when expiresAt > now && endpoints |> List.exists (fun candidate -> String.Equals(candidate, endpoint, StringComparison.OrdinalIgnoreCase)) ->
+            | Some endpoint, Some expiresAt when expiresAt > now && validEndpoints |> List.exists (fun candidate -> String.Equals(candidate, endpoint, StringComparison.OrdinalIgnoreCase)) ->
                 Some endpoint
             | _ -> None
 
-        match preferredValid with
-        | Some endpoint -> Some endpoint
-        | None ->
-            endpoints
-            |> List.tryFind (fun endpoint ->
-                toyState.LastFailedGetToysEndpoint
-                |> Option.forall (fun failed -> not (String.Equals(failed, endpoint, StringComparison.OrdinalIgnoreCase))))
-            |> Option.orElse (List.tryHead endpoints)
+        match validEndpoints with
+        | [] -> None
+        | _ ->
+            let bestPriority =
+                validEndpoints
+                |> List.minBy priority
+                |> priority
+
+            match preferredValid with
+            | Some endpoint when priority endpoint = bestPriority -> Some endpoint
+            | _ ->
+                validEndpoints
+                |> List.filter (fun endpoint -> priority endpoint = bestPriority)
+                |> List.tryHead
+                |> Option.orElse (List.tryHead validEndpoints)
 
     interface IAppJob with
         member _.Name = "ToyCacheJob"
