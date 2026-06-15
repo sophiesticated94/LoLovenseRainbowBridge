@@ -6,6 +6,7 @@ open System.Text
 open System.Text.Json
 open System.Text.Json.Nodes
 open System.Threading
+open System.Threading.Tasks
 open LoLovenseRainbowBridge
 open SocketIOClient
 
@@ -18,6 +19,12 @@ type LovenseHttpResponse =
     }
 
 module Transport =
+
+    let private requestCanceledResult (url: string) (message: string) (ct: CancellationToken) =
+        if ct.IsCancellationRequested then
+            None
+        else
+            Some(SocketUrlRequestFailed(url, message))
 
     let newCorrelationId () =
         Guid.NewGuid().ToString("N")
@@ -56,8 +63,14 @@ module Transport =
                                 Body = responseBody
                             }
             with
-            | :? OperationCanceledException ->
-                return raise (OperationCanceledException())
+            | :? TaskCanceledException as ex ->
+                match requestCanceledResult url $"HTTP request timed out or was canceled: {ex.Message}" ct with
+                | Some error -> return Error error
+                | None -> return raise (OperationCanceledException())
+            | :? OperationCanceledException as ex ->
+                match requestCanceledResult url $"HTTP request was canceled: {ex.Message}" ct with
+                | Some error -> return Error error
+                | None -> return raise (OperationCanceledException())
             | ex ->
                 return Error(SocketUrlRequestFailed(url, ex.Message))
         }
@@ -100,8 +113,14 @@ module Transport =
                                 Body = responseBody
                             }
             with
-            | :? OperationCanceledException ->
-                return raise (OperationCanceledException())
+            | :? TaskCanceledException as ex ->
+                match requestCanceledResult url $"HTTP request timed out or was canceled: {ex.Message}" ct with
+                | Some error -> return Error error
+                | None -> return raise (OperationCanceledException())
+            | :? OperationCanceledException as ex ->
+                match requestCanceledResult url $"HTTP request was canceled: {ex.Message}" ct with
+                | Some error -> return Error error
+                | None -> return raise (OperationCanceledException())
             | ex ->
                 return Error(SocketUrlRequestFailed(url, ex.Message))
         }
