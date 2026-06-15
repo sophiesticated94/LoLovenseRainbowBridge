@@ -66,7 +66,6 @@ type LovenseRuleJob
                                     Now = now
                                     LoopIteration = 0L
                                     LastSentFunctionState = lastSentFunctionState
-                                    RuntimeContext = RuntimeState.runtimeRuleContext cacheSnapshot now
                                     RuntimePollMs = runtimeConfig.LovensePollMs
                                 }
 

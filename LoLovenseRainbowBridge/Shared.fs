@@ -2,8 +2,11 @@ namespace LoLovenseRainbowBridge
 
 open System
 open System.Net.Http
+open System.Globalization
+open System.Reflection
 open System.Text.RegularExpressions
 open System.Text.Json.Nodes
+open Microsoft.FSharp.Reflection
 
 module Shared =
 
@@ -89,3 +92,104 @@ module Json =
             |> List.ofSeq
         with _ ->
             []
+
+[<AttributeUsage(AttributeTargets.Field ||| AttributeTargets.Property, AllowMultiple = false)>]
+type CalculatorVariableAttribute() =
+    inherit Attribute()
+
+    member val Name = "" with get, set
+
+module AppCache =
+
+    type CacheEnvelope<'T> =
+        {
+            Value: 'T
+            Version: int64
+            UpdatedAt: DateTimeOffset
+        }
+
+    let private tryProjectFloat (now: DateTimeOffset option) (value: obj) =
+        let rec loop (current: obj) =
+            match current with
+            | null -> Some 0.0
+            | :? bool as value -> Some(if value then 1.0 else 0.0)
+            | :? byte as value -> Some(float value)
+            | :? sbyte as value -> Some(float value)
+            | :? int16 as value -> Some(float value)
+            | :? uint16 as value -> Some(float value)
+            | :? int as value -> Some(float value)
+            | :? uint32 as value -> Some(float value)
+            | :? int64 as value -> Some(float value)
+            | :? uint64 as value -> Some(float value)
+            | :? single as value -> Some(float value)
+            | :? double as value -> Some value
+            | :? decimal as value -> Some(float value)
+            | :? string as value ->
+                match Double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture) with
+                | true, parsed -> Some parsed
+                | false, _ -> None
+            | :? DateTimeOffset as value ->
+                now
+                |> Option.map (fun current -> max 0.0 (current - value).TotalMilliseconds)
+            | _ ->
+                let valueType = current.GetType()
+
+                if FSharpType.IsUnion(valueType, true)
+                   && valueType.FullName.StartsWith("Microsoft.FSharp.Core.FSharpOption`1", StringComparison.Ordinal) then
+                    let case, fields = FSharpValue.GetUnionFields(current, valueType, true)
+
+                    match case.Name, fields with
+                    | "Some", [| inner |] -> loop inner
+                    | _ -> None
+                else
+                    try
+                        Some(Convert.ToDouble(current, CultureInfo.InvariantCulture))
+                    with _ ->
+                        None
+
+        loop value
+
+    let private projectMember (now: DateTimeOffset option) (memberInfo: MemberInfo) (getter: unit -> obj) =
+        let attribute =
+            memberInfo
+                .GetCustomAttributes(typeof<CalculatorVariableAttribute>, true)
+            |> Seq.cast<CalculatorVariableAttribute>
+            |> Seq.tryHead
+
+        match attribute with
+        | None -> None
+        | Some attr ->
+            match tryProjectFloat now (getter ()) with
+            | None -> None
+            | Some value ->
+                let name =
+                    match attr.Name with
+                    | name when not (String.IsNullOrWhiteSpace name) -> name
+                    | _ -> memberInfo.Name
+
+                Some(name, value)
+
+    let projectAnnotated (now: DateTimeOffset option) (source: obj) =
+        if isNull source then
+            Map.empty
+        else
+            let flags = BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic
+            let members =
+                [
+                    for field in source.GetType().GetFields(flags) do
+                        yield projectMember now field (fun () -> field.GetValue(source))
+
+                    for propertyInfo in source.GetType().GetProperties(flags) do
+                        if propertyInfo.GetIndexParameters().Length = 0 && propertyInfo.CanRead then
+                            yield projectMember now propertyInfo (fun () -> propertyInfo.GetValue(source))
+                ]
+                |> List.choose id
+
+            members |> Map.ofList
+
+    let projectMany (now: DateTimeOffset option) (sources: obj seq) =
+        sources
+        |> Seq.fold (fun acc source -> projectAnnotated now source |> Map.fold (fun map key value -> map |> Map.add key value) acc) Map.empty
+
+type IAppCache =
+    abstract Read: unit -> obj

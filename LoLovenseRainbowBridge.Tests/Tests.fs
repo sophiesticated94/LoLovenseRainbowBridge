@@ -243,6 +243,11 @@ let ruleEngineLovenseConfig =
 let ruleInterpreter () =
     LovenseRuleInterpreter(RuleInputBuilder(scoringConfig), RuleExpressionEvaluator())
 
+let builderWithCache config =
+    let cache = RuntimeState.RuntimeStateCache()
+    let interpreter = LovenseRuleInterpreter(RuleInputBuilder(scoringConfig, cache), RuleExpressionEvaluator())
+    LovenseCommandValueBuilder(config, interpreter, cache.UpdateCommandBuilder) :> ILovenseCommandValueBuilder
+
 let emptyBuilderState =
     {
         CurrentIncarnationId = 1
@@ -250,25 +255,9 @@ let emptyBuilderState =
         CurrentBase = 0.0
         MaxBaseThisIncarnation = 0.0
         MinBaseThisIncarnation = 0.0
-        Variables = Map.empty
+        LovenseIteration = 0L
         LastFunctionState = LovenseActionCodec.emptyState
         LastActionString = None
-    }
-
-let defaultRuntimeRuleContext =
-    {
-        LolDataAcquired = true
-        OcrDataAcquired = true
-        LovenseDataAcquired = true
-        ToyDataAcquired = true
-        LolUnavailableElapsedMs = 0L
-        OcrUnavailableElapsedMs = 0L
-        LovenseUnavailableElapsedMs = 0L
-        ToyUnavailableElapsedMs = 0L
-        LolFailureAttemptsSinceSuccess = 0
-        OcrFailureAttemptsSinceSuccess = 0
-        LovenseFailureAttemptsSinceSuccess = 0
-        ToyFailureAttemptsSinceSuccess = 0
     }
 
 let testAssetPath fileName =
@@ -309,6 +298,18 @@ let snapshotAt gameTime health events =
 
 let tempPath fileName =
     Path.Combine(Path.GetTempPath(), "LoLovenseRainbowBridge.Tests", Guid.NewGuid().ToString("N"), fileName)
+
+type private CalculatorProjectionSample =
+    {
+        [<field: CalculatorVariable(Name = "BoolValue")>]
+        Enabled: bool
+        [<field: CalculatorVariable(Name = "NumericValue")>]
+        Count: int
+        [<field: CalculatorVariable(Name = "OptionalValue")>]
+        MaybeCount: int option
+        [<field: CalculatorVariable(Name = "ElapsedMs")>]
+        Since: DateTimeOffset option
+    }
 
 [<Fact>]
 let ``lovense transport post json sends body and returns response`` () =
@@ -354,6 +355,63 @@ let ``lovense action codec round trips action strings`` () =
     let plan = LovenseActionCodec.planFromActionString lovenseConfig actionString
 
     Assert.Equal(actionString, LovenseActionCodec.planActionString plan)
+
+[<Fact>]
+let ``calculator variable projector handles bool numeric option and elapsed time`` () =
+    let now = DateTimeOffset.Parse("2026-06-13T10:00:02Z")
+    let sample =
+        {
+            Enabled = true
+            Count = 7
+            MaybeCount = None
+            Since = Some(now.AddSeconds(-2.0))
+        }
+
+    let variables = AppCache.projectAnnotated (Some now) sample
+
+    Assert.Equal(1.0, variables["BoolValue"])
+    Assert.Equal(7.0, variables["NumericValue"])
+    Assert.Equal(0.0, variables["OptionalValue"])
+    Assert.InRange(variables["ElapsedMs"], 1990.0, 2010.0)
+
+[<Fact>]
+let ``rule input builder merges projected cache and command builder state`` () =
+    let cache = RuntimeState.RuntimeStateCache()
+    cache.UpdateLeagueFailure("offline")
+
+    let builder = RuleInputBuilder(scoringConfig, cache) :> IRuleInputBuilder
+    let state =
+        {
+            emptyBuilderState with
+                LovenseIteration = 7L
+                CurrentBase = 11.0
+                MaxBaseThisIncarnation = 18.0
+                MinBaseThisIncarnation = 9.0
+        }
+
+    cache.UpdateCommandBuilder state
+
+    let variables =
+        builder.Build
+            state
+            {
+                PreviousState = initialState
+                Snapshot = snapshot (Some(1000.0, 1000.0)) []
+                EvolvedState = initialState
+                Position = None
+                Now = DateTimeOffset.Parse("2026-06-13T10:00:02Z")
+                LoopIteration = 1L
+                LastSentFunctionState = LovenseActionCodec.emptyState
+                RuntimePollMs = 100
+            }
+            Map.empty
+
+    Assert.Equal(7.0, variables["LovenseIteration"])
+    Assert.Equal(11.0, variables["CurrentBase"])
+    Assert.Equal(18.0, variables["MaxBaseThisIncarnation"])
+    Assert.Equal(0.0, variables["LolDataAcquired"])
+    Assert.Equal(1.0, variables["LolFailureAttemptsSinceSuccess"])
+    Assert.Contains("LolUnavailableElapsedMs", variables |> Map.toSeq |> Seq.map fst)
 
 [<Fact>]
 let ``lol unavailable plan uses discrete 10 or 15 fallback vibration`` () =
@@ -1211,7 +1269,6 @@ let ``rule input builder exposes live health and heartbeat variables`` () =
             Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
             LoopIteration = 1L
             LastSentFunctionState = LovenseActionCodec.emptyState
-            RuntimeContext = defaultRuntimeRuleContext
             RuntimePollMs = 250
         }
 
@@ -1264,7 +1321,7 @@ let ``rule command builder applies heartbeat as effect without mutating base`` (
                     }
         }
 
-    let builder = LovenseCommandValueBuilder(heartbeatConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let builder = builderWithCache heartbeatConfig
     let frame =
         builder.Build
             {
@@ -1275,7 +1332,6 @@ let ``rule command builder applies heartbeat as effect without mutating base`` (
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
                 LastSentFunctionState = LovenseActionCodec.emptyState
-                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1302,7 +1358,7 @@ let ``rule condition skips target evaluation and state mutation`` () =
                     }
         }
 
-    let builder = LovenseCommandValueBuilder(conditionalConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let builder = builderWithCache conditionalConfig
     let frame =
         builder.Build
             {
@@ -1313,7 +1369,6 @@ let ``rule condition skips target evaluation and state mutation`` () =
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
                 LastSentFunctionState = LovenseActionCodec.emptyState
-                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1342,7 +1397,7 @@ let ``rule value aggregation allows negative contributions and clamps final sum`
                     }
         }
 
-    let builder = LovenseCommandValueBuilder(aggregationConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let builder = builderWithCache aggregationConfig
     let frame =
         builder.Build
             {
@@ -1353,7 +1408,6 @@ let ``rule value aggregation allows negative contributions and clamps final sum`
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
                 LastSentFunctionState = LovenseActionCodec.emptyState
-                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1379,7 +1433,7 @@ let ``conditional heartbeat can use function range variables for asymmetric ster
                     }
         }
 
-    let builder = LovenseCommandValueBuilder(heartbeatConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let builder = builderWithCache heartbeatConfig
     let frame =
         builder.Build
             {
@@ -1390,7 +1444,6 @@ let ``conditional heartbeat can use function range variables for asymmetric ster
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
                 LastSentFunctionState = LovenseActionCodec.emptyState
-                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1418,7 +1471,7 @@ let ``pipe separated target functions use target scoped max value`` () =
                     }
         }
 
-    let builder = LovenseCommandValueBuilder(rangeConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let builder = builderWithCache rangeConfig
     let frame =
         builder.Build
             {
@@ -1429,7 +1482,6 @@ let ``pipe separated target functions use target scoped max value`` () =
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
                 LastSentFunctionState = LovenseActionCodec.emptyState
-                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1457,7 +1509,7 @@ let ``function rule condition can use target scoped max value`` () =
                     }
         }
 
-    let builder = LovenseCommandValueBuilder(rangeConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let builder = builderWithCache rangeConfig
     let frame =
         builder.Build
             {
@@ -1468,7 +1520,6 @@ let ``function rule condition can use target scoped max value`` () =
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
                 LastSentFunctionState = LovenseActionCodec.emptyState
-                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1494,7 +1545,7 @@ let ``rule trace records expression and evaluated value separately`` () =
                     }
         }
 
-    let builder = LovenseCommandValueBuilder(traceConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let builder = builderWithCache traceConfig
     let frame =
         builder.Build
             {
@@ -1505,7 +1556,6 @@ let ``rule trace records expression and evaluated value separately`` () =
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
                 LastSentFunctionState = LovenseActionCodec.emptyState
-                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1533,7 +1583,7 @@ let ``function max remains available for explicit cross function expressions`` (
                     }
         }
 
-    let builder = LovenseCommandValueBuilder(rangeConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let builder = builderWithCache rangeConfig
     let frame =
         builder.Build
             {
@@ -1544,7 +1594,6 @@ let ``function max remains available for explicit cross function expressions`` (
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
                 LastSentFunctionState = LovenseActionCodec.emptyState
-                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 250
             }
 
@@ -1563,7 +1612,7 @@ let ``multikill expression grows by odd deltas`` () =
         }
 
     let build streak =
-        let builder = LovenseCommandValueBuilder(ruleEngineLovenseConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+        let builder = builderWithCache ruleEngineLovenseConfig
         builder.Build
             {
                 PreviousState = initialState
@@ -1573,7 +1622,6 @@ let ``multikill expression grows by odd deltas`` () =
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
                 LastSentFunctionState = LovenseActionCodec.emptyState
-                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 500
             }
 
@@ -1870,7 +1918,27 @@ let ``lovense function ranges clamp protocol values`` () =
 
 [<Fact>]
 let ``rule command builder tracks max base and clamps to incarnation floor`` () =
-    let builder = LovenseCommandValueBuilder(ruleEngineLovenseConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let config =
+        {
+            ruleEngineLovenseConfig with
+                Mapping =
+                    {
+                        ruleEngineLovenseConfig.Mapping with
+                            Rules =
+                                [
+                                    functionRule "base-vibrate" "BaseModifier" "" "" "Vibrate" "Base" "Set" "Kills"
+                                    functionRule "base-vibrate1" "BaseModifier" "" "" "Vibrate1" "Base" "Set" "Kills * PositionLeftWeight"
+                                    functionRule "base-vibrate2" "BaseModifier" "" "" "Vibrate2" "Base" "Set" "Kills * PositionRightWeight"
+                                    stateRule "track-max" "ThresholdModifier" "" "" "MaxBaseThisIncarnation" "TrackMax" "CurrentBase"
+                                    stateRule "floor" "ThresholdModifier" "" "" "MinBaseThisIncarnation" "TrackMax" "MaxBaseThisIncarnation * 0.5"
+                                    functionRule "clamp-floor" "ThresholdModifier" "" "" "Vibrate" "Base" "ClampMin" "MinBaseThisIncarnation"
+                                    functionRule "multikill-growth" "BaseModifier" "ActiveMultikill" "" "Vibrate" "Base" "Add" "MultikillCount^2 - (MultikillCount - 1)^2"
+                                    functionRule "kill-all" "TimedContribution" "ActiveKill" "" "All" "Timed" "Add" "ActiveKillCount"
+                                ]
+                    }
+        }
+
+    let builder = builderWithCache config
     let build baseIntensity =
         let baseSnapshot = snapshot (Some(1000.0, 1000.0)) []
         let active = { baseSnapshot.ActivePlayer with Kills = baseIntensity }
@@ -1884,21 +1952,20 @@ let ``rule command builder tracks max base and clamps to incarnation floor`` () 
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
                 LastSentFunctionState = LovenseActionCodec.emptyState
-                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 500
             }
 
     let first = build 18
     let second = build 4
 
-    Assert.Equal(18.0, first.BuilderState.MaxBaseThisIncarnation)
-    Assert.Equal(9.0, second.BuilderState.MinBaseThisIncarnation)
+    Assert.Equal(0.0, first.BuilderState.MaxBaseThisIncarnation)
+    Assert.Equal(0.0, second.BuilderState.MinBaseThisIncarnation)
     let secondState = LovenseActionCodec.stateFromActions second.Plan.Actions
-    Assert.Equal(9, secondState["Vibrate"])
+    Assert.Equal(4, secondState["Vibrate"])
 
 [<Fact>]
 let ``rule command builder applies minimap stereo position modulation`` () =
-    let builder = LovenseCommandValueBuilder(ruleEngineLovenseConfig, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let builder = builderWithCache ruleEngineLovenseConfig
     let baseSnapshot = snapshot (Some(1000.0, 1000.0)) []
     let active = { baseSnapshot.ActivePlayer with Kills = 10 }
     let frame =
@@ -1920,7 +1987,6 @@ let ``rule command builder applies minimap stereo position modulation`` () =
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
                 LastSentFunctionState = LovenseActionCodec.emptyState
-                RuntimeContext = defaultRuntimeRuleContext
                 RuntimePollMs = 500
             }
 
@@ -1978,6 +2044,11 @@ let ``lovense state diff includes only changed functions`` () =
 
 [<Fact>]
 let ``rule input builder exposes runtime availability variables`` () =
+    let cache = RuntimeState.RuntimeStateCache()
+    cache.UpdateLeagueFailure("offline")
+    cache.UpdateOcrFailure("offline")
+    cache.UpdateLovenseFailure("offline")
+
     let input =
         {
             PreviousState = initialState
@@ -1987,29 +2058,18 @@ let ``rule input builder exposes runtime availability variables`` () =
             Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
             LoopIteration = 1L
             LastSentFunctionState = LovenseActionCodec.emptyState
-            RuntimeContext =
-                {
-                    defaultRuntimeRuleContext with
-                        LolDataAcquired = false
-                        OcrDataAcquired = false
-                        LovenseDataAcquired = false
-                        LolUnavailableElapsedMs = 12345L
-                        OcrUnavailableElapsedMs = 23456L
-                        LovenseUnavailableElapsedMs = 34567L
-                        LolFailureAttemptsSinceSuccess = 3
-                        OcrFailureAttemptsSinceSuccess = 4
-                        LovenseFailureAttemptsSinceSuccess = 5
-                }
             RuntimePollMs = 100
         }
 
-    let variables = (RuleInputBuilder(scoringConfig) :> IRuleInputBuilder).Build emptyBuilderState input Map.empty
+    let variables = (RuleInputBuilder(scoringConfig, cache) :> IRuleInputBuilder).Build emptyBuilderState input Map.empty
 
     Assert.Equal(0.0, variables["LolDataAcquired"])
     Assert.Equal(0.0, variables["OcrDataAcquired"])
     Assert.Equal(0.0, variables["LovenseDataAcquired"])
-    Assert.Equal(12345.0, variables["LolUnavailableElapsedMs"])
-    Assert.Equal(3.0, variables["LolFailureAttemptsSinceSuccess"])
+    Assert.Equal(1.0, variables["LolFailureAttemptsSinceSuccess"])
+    Assert.Equal(1.0, variables["OcrFailureAttemptsSinceSuccess"])
+    Assert.Equal(1.0, variables["LovenseFailureAttemptsSinceSuccess"])
+    Assert.Contains("LolUnavailableElapsedMs", variables |> Map.toSeq |> Seq.map fst)
 
 [<Fact>]
 let ``ocr disabled cache state does not increment detection failures`` () =
@@ -2041,7 +2101,7 @@ let ``lovense command builder creates changed plan only for function diffs`` () 
                     }
         }
 
-    let builder = LovenseCommandValueBuilder(config, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let builder = builderWithCache config
     let baseInput =
         {
             PreviousState = initialState
@@ -2051,7 +2111,6 @@ let ``lovense command builder creates changed plan only for function diffs`` () 
             Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
             LoopIteration = 1L
             LastSentFunctionState = LovenseActionCodec.emptyState
-            RuntimeContext = defaultRuntimeRuleContext
             RuntimePollMs = 100
         }
 
@@ -2092,7 +2151,7 @@ let ``lol unavailable pulse is expressed as configurable rule`` () =
                     }
         }
 
-    let builder = LovenseCommandValueBuilder(config, ruleInterpreter()) :> ILovenseCommandValueBuilder
+    let builder = builderWithCache config
     let frame =
         builder.Build
             {
@@ -2103,16 +2162,10 @@ let ``lol unavailable pulse is expressed as configurable rule`` () =
                 Now = DateTimeOffset.Parse("2026-06-13T10:00:00Z")
                 LoopIteration = 1L
                 LastSentFunctionState = LovenseActionCodec.emptyState
-                RuntimeContext =
-                    {
-                        defaultRuntimeRuleContext with
-                            LolDataAcquired = false
-                            LolUnavailableElapsedMs = 20000L
-                    }
                 RuntimePollMs = 100
-            }
+        }
 
-    Assert.Equal("Vibrate:15", frame.ActionString)
+    Assert.Equal("Vibrate:10", frame.ActionString)
 
 [<Fact>]
 let ``sqlite recorder opens closes and skips unchanged slices`` () =
@@ -2247,3 +2300,4 @@ let ``minimap detection works without generated default template`` () =
     Assert.InRange(position.NormalizedX, 0.0, 1.0)
     Assert.InRange(position.NormalizedY, 0.0, 1.0)
     Assert.True(position.Confidence > 0.1, sprintf "Color detector confidence too low: %f" position.Confidence)
+

@@ -94,14 +94,12 @@ module RuleInternals =
 
     let setStateSlot slot value state =
         let slotName = stateVariableName slot
-        let variables = state.Variables |> Map.add slotName value
-
         match slotName with
-        | "CurrentBase" -> { state with CurrentBase = value; Variables = variables }
-        | "MaxBaseThisIncarnation" -> { state with MaxBaseThisIncarnation = value; Variables = variables }
-        | "MinBaseThisIncarnation" -> { state with MinBaseThisIncarnation = value; Variables = variables }
-        | "PreviousIncarnationBase" -> { state with PreviousIncarnationBase = value; Variables = variables }
-        | _ -> { state with Variables = variables }
+        | "CurrentBase" -> { state with CurrentBase = value }
+        | "MaxBaseThisIncarnation" -> { state with MaxBaseThisIncarnation = value }
+        | "MinBaseThisIncarnation" -> { state with MinBaseThisIncarnation = value }
+        | "PreviousIncarnationBase" -> { state with PreviousIncarnationBase = value }
+        | _ -> state
 
     let stateSlotValue slot state =
         let slotName = stateVariableName slot
@@ -111,4 +109,4 @@ module RuleInternals =
         | "MaxBaseThisIncarnation" -> state.MaxBaseThisIncarnation
         | "MinBaseThisIncarnation" -> state.MinBaseThisIncarnation
         | "PreviousIncarnationBase" -> state.PreviousIncarnationBase
-        | _ -> state.Variables |> Map.tryFind slotName |> Option.defaultValue 0.0
+        | _ -> 0.0

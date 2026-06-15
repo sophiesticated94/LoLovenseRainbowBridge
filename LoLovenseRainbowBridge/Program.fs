@@ -171,10 +171,10 @@ module Program =
             use serviceProvider =
                 ServiceCollection()
                     .AddSingleton<IRuleExpressionEvaluator, RuleExpressionEvaluator>()
-                    .AddSingleton<IRuleInputBuilder>(fun _ -> RuleInputBuilder(config.Scoring) :> IRuleInputBuilder)
+                    .AddSingleton<IRuleInputBuilder>(fun _ -> RuleInputBuilder(config.Scoring, runtimeCache) :> IRuleInputBuilder)
                     .AddSingleton<ILovenseRuleInterpreter, LovenseRuleInterpreter>()
                     .AddSingleton<ILovenseCommandValueBuilder>(fun services ->
-                        LovenseCommandValueBuilder(config.Lovense, services.GetRequiredService<ILovenseRuleInterpreter>()) :> ILovenseCommandValueBuilder)
+                        LovenseCommandValueBuilder(config.Lovense, services.GetRequiredService<ILovenseRuleInterpreter>(), runtimeCache.UpdateCommandBuilder) :> ILovenseCommandValueBuilder)
                     .BuildServiceProvider()
 
             let commandBuilder = serviceProvider.GetRequiredService<ILovenseCommandValueBuilder>()

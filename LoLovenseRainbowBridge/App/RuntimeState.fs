@@ -18,20 +18,82 @@ module RuntimeState =
     type LeagueCacheState =
         {
             Snapshot: BridgeSnapshot option
+            [<field: CalculatorVariable(Name = "LolDataAcquired")>]
             DataAcquired: bool
+            [<field: CalculatorVariable(Name = "LolFailureAttemptsSinceSuccess")>]
             FailureAttemptsSinceSuccess: int
             LastSuccessfulAt: DateTimeOffset option
+            [<field: CalculatorVariable(Name = "LolUnavailableElapsedMs")>]
             UnavailableSince: DateTimeOffset option
             LastError: string option
             Version: int64
         }
 
+    type RuntimeContextCacheState =
+        {
+            [<field: CalculatorVariable(Name = "LolDataAcquired")>]
+            LolDataAcquired: bool
+            [<field: CalculatorVariable(Name = "OcrDataAcquired")>]
+            OcrDataAcquired: bool
+            [<field: CalculatorVariable(Name = "LovenseDataAcquired")>]
+            LovenseDataAcquired: bool
+            [<field: CalculatorVariable(Name = "ToyDataAcquired")>]
+            ToyDataAcquired: bool
+            [<field: CalculatorVariable(Name = "LolUnavailableElapsedMs")>]
+            LolUnavailableElapsedMs: int64
+            [<field: CalculatorVariable(Name = "OcrUnavailableElapsedMs")>]
+            OcrUnavailableElapsedMs: int64
+            [<field: CalculatorVariable(Name = "LovenseUnavailableElapsedMs")>]
+            LovenseUnavailableElapsedMs: int64
+            [<field: CalculatorVariable(Name = "ToyUnavailableElapsedMs")>]
+            ToyUnavailableElapsedMs: int64
+            [<field: CalculatorVariable(Name = "LolFailureAttemptsSinceSuccess")>]
+            LolFailureAttemptsSinceSuccess: int
+            [<field: CalculatorVariable(Name = "OcrFailureAttemptsSinceSuccess")>]
+            OcrFailureAttemptsSinceSuccess: int
+            [<field: CalculatorVariable(Name = "LovenseFailureAttemptsSinceSuccess")>]
+            LovenseFailureAttemptsSinceSuccess: int
+            [<field: CalculatorVariable(Name = "ToyFailureAttemptsSinceSuccess")>]
+            ToyFailureAttemptsSinceSuccess: int
+        }
+
+    type CommandBuilderCacheState =
+        {
+            [<field: CalculatorVariable(Name = "IncarnationId")>]
+            CurrentIncarnationId: int
+            [<field: CalculatorVariable(Name = "PreviousIncarnationBase")>]
+            PreviousIncarnationBase: float
+            [<field: CalculatorVariable(Name = "CurrentBase")>]
+            CurrentBase: float
+            [<field: CalculatorVariable(Name = "MaxBaseThisIncarnation")>]
+            MaxBaseThisIncarnation: float
+            [<field: CalculatorVariable(Name = "MinBaseThisIncarnation")>]
+            MinBaseThisIncarnation: float
+            [<field: CalculatorVariable(Name = "LovenseIteration")>]
+            LovenseIteration: int64
+        }
+
     type OcrCacheState =
         {
             Position: Lovense.LovensePlanningPosition option
+            [<field: CalculatorVariable(Name = "PositionAvailable")>]
+            PositionAvailable: bool
+            [<field: CalculatorVariable(Name = "PositionX")>]
+            PositionX: float
+            [<field: CalculatorVariable(Name = "PositionY")>]
+            PositionY: float
+            [<field: CalculatorVariable(Name = "PositionConfidence")>]
+            PositionConfidence: float
+            [<field: CalculatorVariable(Name = "PositionLeftWeight")>]
+            PositionLeftWeight: float
+            [<field: CalculatorVariable(Name = "PositionRightWeight")>]
+            PositionRightWeight: float
+            [<field: CalculatorVariable(Name = "OcrDataAcquired")>]
             DataAcquired: bool
+            [<field: CalculatorVariable(Name = "OcrFailureAttemptsSinceSuccess")>]
             DetectionFailures: int
             LastSuccessfulAt: DateTimeOffset option
+            [<field: CalculatorVariable(Name = "OcrUnavailableElapsedMs")>]
             UnavailableSince: DateTimeOffset option
             LastError: string option
             Version: int64
@@ -39,10 +101,14 @@ module RuntimeState =
 
     type LovenseCacheState =
         {
+            [<field: CalculatorVariable(Name = "LovenseDataAcquired")>]
             DataAcquired: bool
+            [<field: CalculatorVariable(Name = "LovenseConnected")>]
             Connected: bool
+            [<field: CalculatorVariable(Name = "LovenseFailureAttemptsSinceSuccess")>]
             FailureAttemptsSinceSuccess: int
             LastSuccessfulAt: DateTimeOffset option
+            [<field: CalculatorVariable(Name = "LovenseUnavailableElapsedMs")>]
             UnavailableSince: DateTimeOffset option
             LastError: string option
             Version: int64
@@ -51,9 +117,12 @@ module RuntimeState =
     type ToyCacheState =
         {
             DeviceInfo: LovenseDeviceInfo option
+            [<field: CalculatorVariable(Name = "ToyDataAcquired")>]
             DataAcquired: bool
+            [<field: CalculatorVariable(Name = "ToyFailureAttemptsSinceSuccess")>]
             FailureAttemptsSinceSuccess: int
             LastSuccessfulAt: DateTimeOffset option
+            [<field: CalculatorVariable(Name = "ToyUnavailableElapsedMs")>]
             UnavailableSince: DateTimeOffset option
             LastError: string option
             Version: int64
@@ -61,6 +130,8 @@ module RuntimeState =
 
     type RuntimeCacheSnapshot =
         {
+            RuntimeContext: RuntimeContextCacheState
+            CommandBuilder: CommandBuilderCacheState
             League: LeagueCacheState
             Ocr: OcrCacheState
             Lovense: LovenseCacheState
@@ -87,12 +158,44 @@ module RuntimeState =
     let private initialOcr =
         {
             Position = None
+            PositionAvailable = false
+            PositionX = 0.0
+            PositionY = 0.0
+            PositionConfidence = 0.0
+            PositionLeftWeight = 0.0
+            PositionRightWeight = 0.0
             DataAcquired = false
             DetectionFailures = 0
             LastSuccessfulAt = None
             UnavailableSince = Some DateTimeOffset.UtcNow
             LastError = None
             Version = 0L
+        }
+
+    let private initialRuntimeContext =
+        {
+            LolDataAcquired = false
+            OcrDataAcquired = false
+            LovenseDataAcquired = false
+            ToyDataAcquired = false
+            LolUnavailableElapsedMs = 0L
+            OcrUnavailableElapsedMs = 0L
+            LovenseUnavailableElapsedMs = 0L
+            ToyUnavailableElapsedMs = 0L
+            LolFailureAttemptsSinceSuccess = 0
+            OcrFailureAttemptsSinceSuccess = 0
+            LovenseFailureAttemptsSinceSuccess = 0
+            ToyFailureAttemptsSinceSuccess = 0
+        }
+
+    let private initialCommandBuilder =
+        {
+            CurrentIncarnationId = 1
+            PreviousIncarnationBase = 0.0
+            CurrentBase = 0.0
+            MaxBaseThisIncarnation = 0.0
+            MinBaseThisIncarnation = 0.0
+            LovenseIteration = 0L
         }
 
     let private initialLovense =
@@ -121,14 +224,57 @@ module RuntimeState =
         let gate = obj()
         let mutable snapshot =
             {
+                RuntimeContext = initialRuntimeContext
+                CommandBuilder = initialCommandBuilder
                 League = initialLeague
                 Ocr = initialOcr
                 Lovense = initialLovense
                 Toys = initialToys
             }
 
+        let syncRuntimeContext now =
+            let elapsedMs (since: DateTimeOffset option) =
+                since
+                |> Option.map (fun value -> max 0L (int64 (now - value).TotalMilliseconds))
+                |> Option.defaultValue 0L
+
+            {
+                LolDataAcquired = snapshot.League.DataAcquired
+                OcrDataAcquired = snapshot.Ocr.DataAcquired
+                LovenseDataAcquired = snapshot.Lovense.DataAcquired
+                ToyDataAcquired = snapshot.Toys.DataAcquired
+                LolUnavailableElapsedMs = elapsedMs snapshot.League.UnavailableSince
+                OcrUnavailableElapsedMs = elapsedMs snapshot.Ocr.UnavailableSince
+                LovenseUnavailableElapsedMs = elapsedMs snapshot.Lovense.UnavailableSince
+                ToyUnavailableElapsedMs = elapsedMs snapshot.Toys.UnavailableSince
+                LolFailureAttemptsSinceSuccess = snapshot.League.FailureAttemptsSinceSuccess
+                OcrFailureAttemptsSinceSuccess = snapshot.Ocr.DetectionFailures
+                LovenseFailureAttemptsSinceSuccess = snapshot.Lovense.FailureAttemptsSinceSuccess
+                ToyFailureAttemptsSinceSuccess = snapshot.Toys.FailureAttemptsSinceSuccess
+            }
+
         member _.Read() =
             lock gate (fun () -> snapshot)
+
+        interface IAppCache with
+            member _.Read() =
+                lock gate (fun () -> box snapshot)
+
+        member _.UpdateCommandBuilder(builder: Lovense.LovenseCommandBuilderState) =
+            lock gate (fun () ->
+                snapshot <-
+                    {
+                        snapshot with
+                            CommandBuilder =
+                                {
+                                    CurrentIncarnationId = builder.CurrentIncarnationId
+                                    PreviousIncarnationBase = builder.PreviousIncarnationBase
+                                    CurrentBase = builder.CurrentBase
+                                    MaxBaseThisIncarnation = builder.MaxBaseThisIncarnation
+                                    MinBaseThisIncarnation = builder.MinBaseThisIncarnation
+                                    LovenseIteration = builder.LovenseIteration
+                                }
+                    })
 
         member _.UpdateLeagueSuccess leagueSnapshot =
             lock gate (fun () ->
@@ -147,7 +293,8 @@ module RuntimeState =
                                         LastError = None
                                         Version = snapshot.League.Version + 1L
                                 }
-                    })
+                    }
+                snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
         member _.UpdateLeagueFailure error =
             lock gate (fun () ->
@@ -164,7 +311,8 @@ module RuntimeState =
                                         LastError = Some error
                                         Version = snapshot.League.Version + 1L
                                 }
-                    })
+                    }
+                snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
         member _.UpdateOcrSuccess position =
             lock gate (fun () ->
@@ -176,6 +324,12 @@ module RuntimeState =
                                 {
                                     snapshot.Ocr with
                                         Position = Some position
+                                        PositionAvailable = true
+                                        PositionX = position.NormalizedX
+                                        PositionY = position.NormalizedY
+                                        PositionConfidence = position.Confidence
+                                        PositionLeftWeight = 1.0 - max 0.0 (min 1.0 position.NormalizedX)
+                                        PositionRightWeight = max 0.0 (min 1.0 position.NormalizedX)
                                         DataAcquired = true
                                         DetectionFailures = 0
                                         LastSuccessfulAt = Some now
@@ -183,7 +337,8 @@ module RuntimeState =
                                         LastError = None
                                         Version = snapshot.Ocr.Version + 1L
                                 }
-                    })
+                    }
+                snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
         member _.UpdateOcrFailure error =
             lock gate (fun () ->
@@ -194,13 +349,21 @@ module RuntimeState =
                             Ocr =
                                 {
                                     snapshot.Ocr with
+                                        Position = None
+                                        PositionAvailable = false
+                                        PositionX = 0.0
+                                        PositionY = 0.0
+                                        PositionConfidence = 0.0
+                                        PositionLeftWeight = 0.0
+                                        PositionRightWeight = 0.0
                                         DataAcquired = false
                                         DetectionFailures = snapshot.Ocr.DetectionFailures + 1
                                         UnavailableSince = snapshot.Ocr.UnavailableSince |> Option.orElse (Some now)
                                         LastError = Some error
                                         Version = snapshot.Ocr.Version + 1L
                                 }
-                    })
+                    }
+                snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
         member _.UpdateOcrDisabled() =
             lock gate (fun () ->
@@ -211,12 +374,20 @@ module RuntimeState =
                             Ocr =
                                 {
                                     snapshot.Ocr with
+                                        Position = None
+                                        PositionAvailable = false
+                                        PositionX = 0.0
+                                        PositionY = 0.0
+                                        PositionConfidence = 0.0
+                                        PositionLeftWeight = 0.0
+                                        PositionRightWeight = 0.0
                                         DataAcquired = false
                                         UnavailableSince = snapshot.Ocr.UnavailableSince |> Option.orElse (Some now)
                                         LastError = Some "Position-based rotation is disabled."
                                         Version = snapshot.Ocr.Version + 1L
                                 }
-                    })
+                    }
+                snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
         member _.UpdateLovenseSuccess connected =
             lock gate (fun () ->
@@ -235,7 +406,8 @@ module RuntimeState =
                                         LastError = None
                                         Version = snapshot.Lovense.Version + 1L
                                 }
-                    })
+                    }
+                snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
         member _.UpdateLovenseFailure error =
             lock gate (fun () ->
@@ -253,7 +425,8 @@ module RuntimeState =
                                         LastError = Some error
                                         Version = snapshot.Lovense.Version + 1L
                                 }
-                    })
+                    }
+                snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
         member _.UpdateToySuccess(deviceInfo: LovenseDeviceInfo) =
             lock gate (fun () ->
@@ -272,7 +445,8 @@ module RuntimeState =
                                         LastError = None
                                         Version = snapshot.Toys.Version + 1L
                                 }
-                    })
+                    }
+                snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
         member _.UpdateToyFailure(error: string) =
             lock gate (fun () ->
@@ -289,7 +463,8 @@ module RuntimeState =
                                         LastError = Some error
                                         Version = snapshot.Toys.Version + 1L
                                 }
-                    })
+                    }
+                snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
         member _.UpdateToyDisabled() =
             lock gate (fun () ->
@@ -305,7 +480,8 @@ module RuntimeState =
                                         LastError = Some "Lovense toy cache refresh is disabled."
                                         Version = snapshot.Toys.Version + 1L
                                 }
-                    })
+                    }
+                snapshot <- { snapshot with RuntimeContext = syncRuntimeContext now })
 
     let planningQuadrant normalizedX normalizedY =
         if normalizedX >= 0.42 && normalizedX <= 0.58 && normalizedY >= 0.42 && normalizedY <= 0.58 then "Center"
@@ -375,19 +551,3 @@ module RuntimeState =
         since
         |> Option.map (fun value -> max 0L (int64 (now - value).TotalMilliseconds))
         |> Option.defaultValue 0L
-
-    let runtimeRuleContext (snapshot: RuntimeCacheSnapshot) now : Lovense.LovenseRuntimeRuleContext =
-        {
-            LolDataAcquired = snapshot.League.DataAcquired
-            OcrDataAcquired = snapshot.Ocr.DataAcquired
-            LovenseDataAcquired = snapshot.Lovense.DataAcquired
-            ToyDataAcquired = snapshot.Toys.DataAcquired
-            LolUnavailableElapsedMs = elapsedMs snapshot.League.UnavailableSince now
-            OcrUnavailableElapsedMs = elapsedMs snapshot.Ocr.UnavailableSince now
-            LovenseUnavailableElapsedMs = elapsedMs snapshot.Lovense.UnavailableSince now
-            ToyUnavailableElapsedMs = elapsedMs snapshot.Toys.UnavailableSince now
-            LolFailureAttemptsSinceSuccess = snapshot.League.FailureAttemptsSinceSuccess
-            OcrFailureAttemptsSinceSuccess = snapshot.Ocr.DetectionFailures
-            LovenseFailureAttemptsSinceSuccess = snapshot.Lovense.FailureAttemptsSinceSuccess
-            ToyFailureAttemptsSinceSuccess = snapshot.Toys.FailureAttemptsSinceSuccess
-        }

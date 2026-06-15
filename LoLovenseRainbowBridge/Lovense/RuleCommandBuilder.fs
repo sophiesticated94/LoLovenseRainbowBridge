@@ -4,7 +4,7 @@ open System
 open LoLovenseRainbowBridge
 open LoLovenseRainbowBridge.Bridge
 
-type LovenseCommandValueBuilder(config: LovenseConfig, interpreter: ILovenseRuleInterpreter) =
+type LovenseCommandValueBuilder(config: LovenseConfig, interpreter: ILovenseRuleInterpreter, updateCommandBuilder: LovenseCommandBuilderState -> unit) =
 
     let mutable state =
         {
@@ -13,12 +13,10 @@ type LovenseCommandValueBuilder(config: LovenseConfig, interpreter: ILovenseRule
             CurrentBase = 0.0
             MaxBaseThisIncarnation = 0.0
             MinBaseThisIncarnation = 0.0
-            Variables = Map.empty
+            LovenseIteration = 0L
             LastFunctionState = LovenseActionCodec.emptyState
             LastActionString = None
         }
-
-    let mutable lovenseIteration = 0L
 
     let profileFor fn =
         let name = LovenseActionCodec.actionName fn
@@ -125,16 +123,10 @@ type LovenseCommandValueBuilder(config: LovenseConfig, interpreter: ILovenseRule
 
     interface ILovenseCommandValueBuilder with
         member _.Build input =
-            lovenseIteration <- lovenseIteration + 1L
-            let stateBeforeBuild =
-                {
-                    state with
-                        Variables =
-                            state.Variables
-                            |> Map.add "LovenseIteration" (float lovenseIteration)
-                            |> Map.add "LoopIteration" (float lovenseIteration)
-                }
-            let (layers, nextState, diagnostics: LovenseRuleDiagnostic list, traces: LovenseRuleEvaluationTrace list) =
+            state <- { state with LovenseIteration = state.LovenseIteration + 1L }
+            let stateBeforeBuild = state
+            updateCommandBuilder stateBeforeBuild
+            let (layers, nextState, diagnostics: LovenseRuleDiagnostic list, traces: LovenseRuleEvaluationTrace list, ruleVariables) =
                 interpreter.Apply stateBeforeBuild input config.Mapping.Rules
             let functionStates = materializeLayers layers
 
@@ -175,19 +167,14 @@ type LovenseCommandValueBuilder(config: LovenseConfig, interpreter: ILovenseRule
                 |> Map.tryFind Vibrate
                 |> Option.map (fun layer -> layer.Base)
                 |> Option.defaultValue nextState.CurrentBase
-
-            let variables =
-                nextState.Variables
-                |> Map.add "CurrentBase" vibrateBase
-
             state <-
                 {
                     nextState with
                         CurrentBase = vibrateBase
-                        Variables = variables
                         LastFunctionState = input.LastSentFunctionState
                         LastActionString = Some actionString
                 }
+            updateCommandBuilder state
 
             {
                 Plan = plan
@@ -199,8 +186,8 @@ type LovenseCommandValueBuilder(config: LovenseConfig, interpreter: ILovenseRule
                 FunctionStates = functionStates
                 StateDiff = diff
                 BuilderState = state
-                Breakdown = breakdownFrom variables functionStates
-                RuleVariables = variables
+                Breakdown = breakdownFrom ruleVariables functionStates
+                RuleVariables = ruleVariables
                 Diagnostics = diagnostics
                 RuleTraces = traces
                 Debug =

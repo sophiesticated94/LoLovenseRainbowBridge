@@ -5,11 +5,52 @@ open LoLovenseRainbowBridge
 open LoLovenseRainbowBridge.Bridge
 open LoLovenseRainbowBridge.Bridge.Scoring
 
-type RuleInputBuilder(scoringConfig: ScoringConfig) =
+type RuleInputBuilder(scoringConfig: ScoringConfig, ?cache: IAppCache) =
 
     let add key value variables = variables |> Map.add key value
 
+    let cacheVariables now =
+        match cache with
+        | None -> Map.empty
+        | Some cache ->
+            let snapshot = cache.Read()
+            let snapshotType = snapshot.GetType()
+
+            let projectChild name =
+                let property = snapshotType.GetProperty(name)
+
+                if isNull property then
+                    Map.empty
+                else
+                    property.GetValue(snapshot)
+                    |> AppCache.projectAnnotated (Some now)
+
+            [
+                projectChild "League"
+                projectChild "Ocr"
+                projectChild "Lovense"
+                projectChild "Toys"
+                projectChild "RuntimeContext"
+                projectChild "CommandBuilder"
+            ]
+            |> List.fold RuleInternals.mergeVariables Map.empty
+
     let boolValue value = if value then 1.0 else 0.0
+
+    let positionWeights position =
+        match position |> Option.map (fun value -> value.Quadrant) with
+        | Some value when String.Equals(value, "Center", StringComparison.OrdinalIgnoreCase) -> 1.0, 1.0
+        | Some value when String.Equals(value, "TopLeft", StringComparison.OrdinalIgnoreCase) -> 1.35, 0.35
+        | Some value when String.Equals(value, "TopRight", StringComparison.OrdinalIgnoreCase) -> 0.35, 1.35
+        | Some value when String.Equals(value, "BottomLeft", StringComparison.OrdinalIgnoreCase) -> 0.0, 0.0
+        | Some value when String.Equals(value, "BottomRight", StringComparison.OrdinalIgnoreCase) -> 0.55, 1.05
+        | Some value when String.Equals(value, "Left", StringComparison.OrdinalIgnoreCase) -> 1.15, 0.65
+        | Some value when String.Equals(value, "Right", StringComparison.OrdinalIgnoreCase) -> 0.65, 1.15
+        | Some _ ->
+            match position with
+            | Some p -> CapabilityResolver.stereoWeightsFromNormalizedX 100 p.NormalizedX |> fun (l, r) -> float l / 100.0, float r / 100.0
+            | None -> 1.0, 1.0
+        | None -> 1.0, 1.0
 
     let recentWithin windowSec (snapshot: BridgeSnapshot) (ev: BridgeEvent) =
         ev.GameTime <= snapshot.GameTime && snapshot.GameTime - ev.GameTime <= windowSec
@@ -126,21 +167,6 @@ type RuleInputBuilder(scoringConfig: ScoringConfig) =
         ]
         |> List.max
 
-    let positionWeights position =
-        match position |> Option.map (fun value -> value.Quadrant) with
-        | Some value when String.Equals(value, "Center", StringComparison.OrdinalIgnoreCase) -> 1.0, 1.0
-        | Some value when String.Equals(value, "TopLeft", StringComparison.OrdinalIgnoreCase) -> 1.35, 0.35
-        | Some value when String.Equals(value, "TopRight", StringComparison.OrdinalIgnoreCase) -> 0.35, 1.35
-        | Some value when String.Equals(value, "BottomLeft", StringComparison.OrdinalIgnoreCase) -> 0.0, 0.0
-        | Some value when String.Equals(value, "BottomRight", StringComparison.OrdinalIgnoreCase) -> 0.55, 1.05
-        | Some value when String.Equals(value, "Left", StringComparison.OrdinalIgnoreCase) -> 1.15, 0.65
-        | Some value when String.Equals(value, "Right", StringComparison.OrdinalIgnoreCase) -> 0.65, 1.15
-        | Some _ ->
-            match position with
-            | Some p -> CapabilityResolver.stereoWeightsFromNormalizedX 100 p.NormalizedX |> fun (l, r) -> float l / 100.0, float r / 100.0
-            | None -> 1.0, 1.0
-        | None -> 1.0, 1.0
-
     interface IRuleInputBuilder with
         member _.Build state input layers =
             let snapshot = input.Snapshot
@@ -153,16 +179,16 @@ type RuleInputBuilder(scoringConfig: ScoringConfig) =
             let activeDeaths = activeDeathEvents input
             let multikillStreak = activeMultikillStreak input
             let teamfightKills = teamfightKillCount input
-            let leftWeight, rightWeight = positionWeights input.Position
             let heartbeatAmplitude = missingHealth * scoringConfig.HeartbeatPulseMaxAmplitude
             let safePollMs = max 1 input.RuntimePollMs
             let iterationsPerSecond = max 1.0 (Math.Round(1000.0 / float safePollMs))
-            let loopIteration =
-                state.Variables
-                |> Map.tryFind "LovenseIteration"
-                |> Option.defaultValue (float input.LoopIteration)
+            let loopIteration = float input.LoopIteration
             let loopIterationWithinSecond = float ((int64 loopIteration) % int64 iterationsPerSecond)
             let loopTimeSec = loopIteration * float safePollMs / 1000.0
+            let projectedCacheVariables = cacheVariables input.Now
+            let projectedStateVariables = AppCache.projectAnnotated None state
+            let positionLeftWeight, positionRightWeight = positionWeights input.Position
+            let positionAvailable = input.Position.IsSome
 
             Map.empty
             |> add "Kills" (float active.Kills)
@@ -208,30 +234,16 @@ type RuleInputBuilder(scoringConfig: ScoringConfig) =
             |> add "LoopIterationWithinSecond" loopIterationWithinSecond
             |> add "LoopIterationsPerSecond" iterationsPerSecond
             |> add "LoopTimeSec" loopTimeSec
-            |> add "LovenseIteration" loopIteration
             |> add "RuntimePollMs" (float safePollMs)
-            |> add "LolDataAcquired" (boolValue input.RuntimeContext.LolDataAcquired)
-            |> add "OcrDataAcquired" (boolValue input.RuntimeContext.OcrDataAcquired)
-            |> add "LovenseDataAcquired" (boolValue input.RuntimeContext.LovenseDataAcquired)
-            |> add "LolUnavailableElapsedMs" (float input.RuntimeContext.LolUnavailableElapsedMs)
-            |> add "OcrUnavailableElapsedMs" (float input.RuntimeContext.OcrUnavailableElapsedMs)
-            |> add "LovenseUnavailableElapsedMs" (float input.RuntimeContext.LovenseUnavailableElapsedMs)
-            |> add "LolFailureAttemptsSinceSuccess" (float input.RuntimeContext.LolFailureAttemptsSinceSuccess)
-            |> add "OcrFailureAttemptsSinceSuccess" (float input.RuntimeContext.OcrFailureAttemptsSinceSuccess)
-            |> add "LovenseFailureAttemptsSinceSuccess" (float input.RuntimeContext.LovenseFailureAttemptsSinceSuccess)
-            |> add "Pi" Math.PI
-            |> add "CurrentBase" state.CurrentBase
-            |> add "MaxBaseThisIncarnation" state.MaxBaseThisIncarnation
-            |> add "MinBaseThisIncarnation" state.MinBaseThisIncarnation
-            |> add "PreviousIncarnationBase" state.PreviousIncarnationBase
-            |> add "IncarnationId" (float state.CurrentIncarnationId)
-            |> add "PositionAvailable" (boolValue input.Position.IsSome)
-            |> add "PositionX" (input.Position |> Option.map (fun p -> p.NormalizedX) |> Option.defaultValue 0.5)
-            |> add "PositionY" (input.Position |> Option.map (fun p -> p.NormalizedY) |> Option.defaultValue 0.5)
+            |> RuleInternals.mergeVariables projectedCacheVariables
+            |> RuleInternals.mergeVariables projectedStateVariables
+            |> add "PositionAvailable" (boolValue positionAvailable)
+            |> add "PositionLeftWeight" positionLeftWeight
+            |> add "PositionRightWeight" positionRightWeight
+            |> add "PositionX" (input.Position |> Option.map (fun p -> p.NormalizedX) |> Option.defaultValue 0.0)
+            |> add "PositionY" (input.Position |> Option.map (fun p -> p.NormalizedY) |> Option.defaultValue 0.0)
             |> add "PositionConfidence" (input.Position |> Option.map (fun p -> p.Confidence) |> Option.defaultValue 0.0)
-            |> add "PositionLeftWeight" leftWeight
-            |> add "PositionRightWeight" rightWeight
-            |> RuleInternals.mergeVariables state.Variables
+            |> add "Pi" Math.PI
             |> RuleInternals.mergeVariables (RuleInternals.layerVariables layers)
             |> RuleInternals.mergeVariables (RuleInternals.functionRangeVariables ())
             |> fun variables ->

@@ -6,8 +6,11 @@ open LoLovenseRainbowBridge.Bridge
 
 type LovensePlanningPosition =
     {
+        [<field: CalculatorVariable(Name = "PositionX")>]
         NormalizedX: float
+        [<field: CalculatorVariable(Name = "PositionY")>]
         NormalizedY: float
+        [<field: CalculatorVariable(Name = "PositionConfidence")>]
         Confidence: float
         Quadrant: string
         Zone: string
@@ -23,24 +26,7 @@ type LovenseCommandBuildInput =
         Now: DateTimeOffset
         LoopIteration: int64
         LastSentFunctionState: Map<string, int>
-        RuntimeContext: LovenseRuntimeRuleContext
         RuntimePollMs: int
-    }
-
-and LovenseRuntimeRuleContext =
-    {
-        LolDataAcquired: bool
-        OcrDataAcquired: bool
-        LovenseDataAcquired: bool
-        ToyDataAcquired: bool
-        LolUnavailableElapsedMs: int64
-        OcrUnavailableElapsedMs: int64
-        LovenseUnavailableElapsedMs: int64
-        ToyUnavailableElapsedMs: int64
-        LolFailureAttemptsSinceSuccess: int
-        OcrFailureAttemptsSinceSuccess: int
-        LovenseFailureAttemptsSinceSuccess: int
-        ToyFailureAttemptsSinceSuccess: int
     }
 
 type LovenseFunctionLayers =
@@ -55,12 +41,18 @@ type LovenseFunctionLayers =
 
 type LovenseCommandBuilderState =
     {
+        [<field: CalculatorVariable(Name = "IncarnationId")>]
         CurrentIncarnationId: int
+        [<field: CalculatorVariable(Name = "PreviousIncarnationBase")>]
         PreviousIncarnationBase: float
+        [<field: CalculatorVariable(Name = "CurrentBase")>]
         CurrentBase: float
+        [<field: CalculatorVariable(Name = "MaxBaseThisIncarnation")>]
         MaxBaseThisIncarnation: float
+        [<field: CalculatorVariable(Name = "MinBaseThisIncarnation")>]
         MinBaseThisIncarnation: float
-        Variables: Map<string, float>
+        [<field: CalculatorVariable(Name = "LovenseIteration")>]
+        LovenseIteration: int64
         LastFunctionState: Map<string, int>
         LastActionString: string option
     }
@@ -115,7 +107,7 @@ type IRuleInputBuilder =
     abstract Build: state: LovenseCommandBuilderState -> input: LovenseCommandBuildInput -> layers: Map<LovenseActionFunction, LovenseFunctionLayers> -> Map<string, float>
 
 type ILovenseRuleInterpreter =
-    abstract Apply: LovenseCommandBuilderState -> LovenseCommandBuildInput -> LovenseRuleConfig list -> Map<LovenseActionFunction, LovenseFunctionLayers> * LovenseCommandBuilderState * LovenseRuleDiagnostic list * LovenseRuleEvaluationTrace list
+    abstract Apply: LovenseCommandBuilderState -> LovenseCommandBuildInput -> LovenseRuleConfig list -> Map<LovenseActionFunction, LovenseFunctionLayers> * LovenseCommandBuilderState * LovenseRuleDiagnostic list * LovenseRuleEvaluationTrace list * Map<string, float>
 
 type ILovenseCommandValueBuilder =
     abstract Build: LovenseCommandBuildInput -> LovenseCommandValueFrame

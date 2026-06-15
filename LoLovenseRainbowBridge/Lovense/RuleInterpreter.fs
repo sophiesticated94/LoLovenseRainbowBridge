@@ -116,12 +116,6 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
                     CurrentBase = nextBase
                     MaxBaseThisIncarnation = nextBase
                     MinBaseThisIncarnation = 0.0
-                    Variables =
-                        state.Variables
-                        |> Map.add "CurrentBase" nextBase
-                        |> Map.add "PreviousIncarnationBase" state.CurrentBase
-                        |> Map.add "MaxBaseThisIncarnation" nextBase
-                        |> Map.add "MinBaseThisIncarnation" 0.0
                     LastFunctionState = LovenseActionCodec.emptyState
                     LastActionString = None
             }
@@ -143,19 +137,19 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
                 (layers: Map<LovenseActionFunction, LovenseFunctionLayers>,
                  state: LovenseCommandBuilderState,
                  diagnostics: LovenseRuleDiagnostic list,
-                 traces: LovenseRuleEvaluationTrace list)
+                 traces: LovenseRuleEvaluationTrace list,
+                 variables: Map<string, float>)
                 (rule: LovenseRuleConfig)
                 =
-                let variables =
-                    inputBuilder.Build state input layers
+                let variables = inputBuilder.Build state input layers
 
                 if not (triggerMatches input variables rule.Trigger) then
-                    layers, { state with Variables = variables }, diagnostics, traces
+                    layers, state, diagnostics, traces, variables
                 else
                     match (rule.Layer |> Option.ofObj |> Option.defaultValue "").ToUpperInvariant() with
                     | "STATE" ->
                         if not (conditionMatches input variables rule.Condition) then
-                            layers, { state with Variables = variables }, diagnostics, traces
+                            layers, state, diagnostics, traces, variables
                         else
                             match evaluator.Evaluate rule.Expression variables with
                             | Error message ->
@@ -166,18 +160,18 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
                                         Message = message
                                     }
 
-                                layers, { state with Variables = variables }, diagnostic :: diagnostics, traces
+                                layers, state, diagnostic :: diagnostics, traces, variables
                             | Ok value ->
-                                layers, applyStateTarget rule value { state with Variables = variables }, diagnostics, traces
+                                layers, applyStateTarget rule value state, diagnostics, traces, variables
                     | _ ->
                         targetFunctions rule
-                        |> List.fold (fun (layers, state, diagnostics: LovenseRuleDiagnostic list, traces: LovenseRuleEvaluationTrace list) fn ->
+                        |> List.fold (fun (layers, state, diagnostics: LovenseRuleDiagnostic list, traces: LovenseRuleEvaluationTrace list, _) fn ->
                             let variables =
                                 inputBuilder.Build state input layers
                                 |> targetScopedVariables fn
 
                             if not (conditionMatches input variables rule.Condition) then
-                                layers, { state with Variables = variables }, diagnostics, traces
+                                layers, state, diagnostics, traces, variables
                             else
                                 match evaluator.Evaluate rule.Expression variables with
                                 | Error message ->
@@ -188,15 +182,15 @@ type LovenseRuleInterpreter(inputBuilder: IRuleInputBuilder, evaluator: IRuleExp
                                             Message = message
                                         }
 
-                                    layers, { state with Variables = variables }, diagnostic :: diagnostics, traces
+                                    layers, state, diagnostic :: diagnostics, traces, variables
                                 | Ok value ->
                                     let nextLayers, before, after = applyFunctionTarget rule fn value layers
                                     let minValue = variables |> Map.tryFind "MinValue" |> Option.defaultValue 0.0
                                     let maxValue = variables |> Map.tryFind "MaxValue" |> Option.defaultValue 0.0
                                     let trace = evaluationTrace rule fn value minValue maxValue before after
-                                    nextLayers, { state with Variables = variables }, diagnostics, trace :: traces)
-                            (layers, state, diagnostics, traces)
+                                    nextLayers, state, diagnostics, trace :: traces, variables)
+                            (layers, state, diagnostics, traces, variables)
 
             enabled
-            |> List.fold folder (Map.empty, state, ([]: LovenseRuleDiagnostic list), ([]: LovenseRuleEvaluationTrace list))
-            |> fun (layers, state, diagnostics, traces) -> layers, state, (diagnostics |> List.rev), (traces |> List.rev)
+            |> List.fold folder (Map.empty, state, ([]: LovenseRuleDiagnostic list), ([]: LovenseRuleEvaluationTrace list), Map.empty)
+            |> fun (layers, state, diagnostics, traces, variables) -> layers, state, (diagnostics |> List.rev), (traces |> List.rev), variables
