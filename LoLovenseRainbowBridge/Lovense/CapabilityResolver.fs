@@ -35,7 +35,7 @@ module CapabilityResolver =
         | "LEFTONLY" -> left
         | _ -> max left right
 
-    let private supportedFunctionsFromProfiles (profiles: LovenseToyCapabilityProfile list) =
+    let private supportedFunctionsFromToyProfiles (profiles: LovenseToyCapabilityProfile list) =
         profiles
         |> List.collect (fun profile -> profile.SupportedFunctions |> Set.toList)
         |> Set.ofList
@@ -96,7 +96,7 @@ module CapabilityResolver =
                 if not forced.IsEmpty then
                     forced
                 elif not activeProfiles.IsEmpty then
-                    supportedFunctionsFromProfiles activeProfiles
+                    supportedFunctionsFromToyProfiles activeProfiles
                 else
                     legacySupportedFunctions |> Option.defaultValue Set.empty
 

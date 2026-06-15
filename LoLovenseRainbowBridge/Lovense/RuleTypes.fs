@@ -32,12 +32,15 @@ and LovenseRuntimeRuleContext =
         LolDataAcquired: bool
         OcrDataAcquired: bool
         LovenseDataAcquired: bool
+        ToyDataAcquired: bool
         LolUnavailableElapsedMs: int64
         OcrUnavailableElapsedMs: int64
         LovenseUnavailableElapsedMs: int64
+        ToyUnavailableElapsedMs: int64
         LolFailureAttemptsSinceSuccess: int
         OcrFailureAttemptsSinceSuccess: int
         LovenseFailureAttemptsSinceSuccess: int
+        ToyFailureAttemptsSinceSuccess: int
     }
 
 type LovenseFunctionLayers =

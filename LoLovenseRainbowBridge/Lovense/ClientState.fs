@@ -28,18 +28,89 @@ type SessionRetryPolicy =
     | RetryAuthAndSocketUrl
 
 module ClientState =
-    let applyDeviceInfo (deviceInfo: LovenseDeviceInfo) (session: LovenseSessionState) =
+    let private profileKey (profile: LovenseToyCapabilityProfile) =
+        profile.ToyId
+        |> Option.orElse profile.Name
+        |> Option.orElse profile.ToyType
+        |> Option.orElse profile.Nickname
+        |> Option.defaultValue ""
+
+    let private mergeProfiles (existing: LovenseToyCapabilityProfile list) (incoming: LovenseToyCapabilityProfile list) =
+        let mergeOne (profile: LovenseToyCapabilityProfile) (state: Map<string, LovenseToyCapabilityProfile>) =
+            let key = profileKey profile
+
+            match Map.tryFind key state with
+            | None -> Map.add key profile state
+            | Some current ->
+                Map.add
+                    key
+                    {
+                        current with
+                            ToyId = current.ToyId |> Option.orElse profile.ToyId
+                            Name = current.Name |> Option.orElse profile.Name
+                            ToyType = current.ToyType |> Option.orElse profile.ToyType
+                            Nickname = current.Nickname |> Option.orElse profile.Nickname
+                            Battery = profile.Battery |> Option.orElse current.Battery
+                            Connected = profile.Connected |> Option.orElse current.Connected
+                            ExplicitFunctions = Set.union current.ExplicitFunctions profile.ExplicitFunctions
+                            InferredFunctions = Set.union current.InferredFunctions profile.InferredFunctions
+                            SupportedFunctions = Set.union current.SupportedFunctions profile.SupportedFunctions
+                            StereoVibrationSupported = current.StereoVibrationSupported || profile.StereoVibrationSupported
+                            CapabilitySource =
+                                match current.CapabilitySource, profile.CapabilitySource with
+                                | Explicit, _ -> Explicit
+                                | _, Explicit -> Explicit
+                                | Inferred, _ -> Inferred
+                                | _, Inferred -> Inferred
+                                | Forced, _ -> Forced
+                                | _, Forced -> Forced
+                                | _ -> current.CapabilitySource
+                            Notes =
+                                current.Notes
+                                |> List.append profile.Notes
+                                |> List.distinct
+                    }
+                    state
+
+        (existing @ incoming)
+        |> List.fold (fun state profile -> mergeOne profile state) Map.empty
+        |> Map.toList
+        |> List.map snd
+
+    let mergeDeviceInfo (existing: LovenseDeviceInfo option) (incoming: LovenseDeviceInfo) =
+        let baseline =
+            match existing with
+            | Some value -> value
+            | None -> incoming
+
+        let mergedProfiles = mergeProfiles baseline.CapabilityProfiles incoming.CapabilityProfiles
+        let mergedSupportedFunctions =
+            match baseline.SupportedFunctions, incoming.SupportedFunctions with
+            | Some left, Some right -> Some(Set.union left right)
+            | Some functions, None
+            | None, Some functions -> Some functions
+            | None, None -> None
+
         {
-            session with
-                LatestDeviceInfo = Some deviceInfo
-                CapabilityProfiles = deviceInfo.CapabilityProfiles
-                SupportedFunctions = deviceInfo.SupportedFunctions |> Option.orElse session.SupportedFunctions
+            baseline with
+                ToyList = if incoming.ToyList.IsEmpty then baseline.ToyList else incoming.ToyList
+                SupportedFunctions = mergedSupportedFunctions
+                CapabilityProfiles = mergedProfiles
+                Domain = incoming.Domain |> Option.orElse baseline.Domain
+                HttpsPort = incoming.HttpsPort |> Option.orElse baseline.HttpsPort
+                HttpPort = incoming.HttpPort |> Option.orElse baseline.HttpPort
+                WssPort = incoming.WssPort |> Option.orElse baseline.WssPort
         }
 
-    let onDeviceInfo (deviceInfo: LovenseDeviceInfo) (session: LovenseSessionState) (nextLocalCapabilityRefreshAt: DateTimeOffset byref) =
-        let updatedSession = applyDeviceInfo deviceInfo session
-        nextLocalCapabilityRefreshAt <- DateTimeOffset.MinValue
-        updatedSession
+    let applyDeviceInfo (deviceInfo: LovenseDeviceInfo) (session: LovenseSessionState) =
+        let mergedDeviceInfo = mergeDeviceInfo session.LatestDeviceInfo deviceInfo
+
+        {
+            session with
+                LatestDeviceInfo = Some mergedDeviceInfo
+                CapabilityProfiles = mergedDeviceInfo.CapabilityProfiles
+                SupportedFunctions = mergedDeviceInfo.SupportedFunctions |> Option.orElse session.SupportedFunctions
+        }
 
     let onQrCode (session: LovenseSessionState) =
         if not session.QrCodeLogged then

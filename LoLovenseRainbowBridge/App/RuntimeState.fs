@@ -48,11 +48,23 @@ module RuntimeState =
             Version: int64
         }
 
+    type ToyCacheState =
+        {
+            DeviceInfo: LovenseDeviceInfo option
+            DataAcquired: bool
+            FailureAttemptsSinceSuccess: int
+            LastSuccessfulAt: DateTimeOffset option
+            UnavailableSince: DateTimeOffset option
+            LastError: string option
+            Version: int64
+        }
+
     type RuntimeCacheSnapshot =
         {
             League: LeagueCacheState
             Ocr: OcrCacheState
             Lovense: LovenseCacheState
+            Toys: ToyCacheState
         }
 
     let initialPositionRotationState =
@@ -94,6 +106,17 @@ module RuntimeState =
             Version = 0L
         }
 
+    let private initialToys =
+        {
+            DeviceInfo = None
+            DataAcquired = false
+            FailureAttemptsSinceSuccess = 0
+            LastSuccessfulAt = None
+            UnavailableSince = Some DateTimeOffset.UtcNow
+            LastError = None
+            Version = 0L
+        }
+
     type RuntimeStateCache() =
         let gate = obj()
         let mutable snapshot =
@@ -101,6 +124,7 @@ module RuntimeState =
                 League = initialLeague
                 Ocr = initialOcr
                 Lovense = initialLovense
+                Toys = initialToys
             }
 
         member _.Read() =
@@ -231,6 +255,58 @@ module RuntimeState =
                                 }
                     })
 
+        member _.UpdateToySuccess(deviceInfo: LovenseDeviceInfo) =
+            lock gate (fun () ->
+                let now = DateTimeOffset.UtcNow
+                snapshot <-
+                    {
+                        snapshot with
+                            Toys =
+                                {
+                                    snapshot.Toys with
+                                        DeviceInfo = Some deviceInfo
+                                        DataAcquired = true
+                                        FailureAttemptsSinceSuccess = 0
+                                        LastSuccessfulAt = Some now
+                                        UnavailableSince = None
+                                        LastError = None
+                                        Version = snapshot.Toys.Version + 1L
+                                }
+                    })
+
+        member _.UpdateToyFailure(error: string) =
+            lock gate (fun () ->
+                let now = DateTimeOffset.UtcNow
+                snapshot <-
+                    {
+                        snapshot with
+                            Toys =
+                                {
+                                    snapshot.Toys with
+                                        DataAcquired = false
+                                        FailureAttemptsSinceSuccess = snapshot.Toys.FailureAttemptsSinceSuccess + 1
+                                        UnavailableSince = snapshot.Toys.UnavailableSince |> Option.orElse (Some now)
+                                        LastError = Some error
+                                        Version = snapshot.Toys.Version + 1L
+                                }
+                    })
+
+        member _.UpdateToyDisabled() =
+            lock gate (fun () ->
+                let now = DateTimeOffset.UtcNow
+                snapshot <-
+                    {
+                        snapshot with
+                            Toys =
+                                {
+                                    snapshot.Toys with
+                                        DataAcquired = false
+                                        UnavailableSince = snapshot.Toys.UnavailableSince |> Option.orElse (Some now)
+                                        LastError = Some "Lovense toy cache refresh is disabled."
+                                        Version = snapshot.Toys.Version + 1L
+                                }
+                    })
+
     let planningQuadrant normalizedX normalizedY =
         if normalizedX >= 0.42 && normalizedX <= 0.58 && normalizedY >= 0.42 && normalizedY <= 0.58 then "Center"
         elif normalizedX < 0.5 && normalizedY < 0.5 then "TopLeft"
@@ -305,10 +381,13 @@ module RuntimeState =
             LolDataAcquired = snapshot.League.DataAcquired
             OcrDataAcquired = snapshot.Ocr.DataAcquired
             LovenseDataAcquired = snapshot.Lovense.DataAcquired
+            ToyDataAcquired = snapshot.Toys.DataAcquired
             LolUnavailableElapsedMs = elapsedMs snapshot.League.UnavailableSince now
             OcrUnavailableElapsedMs = elapsedMs snapshot.Ocr.UnavailableSince now
             LovenseUnavailableElapsedMs = elapsedMs snapshot.Lovense.UnavailableSince now
+            ToyUnavailableElapsedMs = elapsedMs snapshot.Toys.UnavailableSince now
             LolFailureAttemptsSinceSuccess = snapshot.League.FailureAttemptsSinceSuccess
             OcrFailureAttemptsSinceSuccess = snapshot.Ocr.DetectionFailures
             LovenseFailureAttemptsSinceSuccess = snapshot.Lovense.FailureAttemptsSinceSuccess
+            ToyFailureAttemptsSinceSuccess = snapshot.Toys.FailureAttemptsSinceSuccess
         }

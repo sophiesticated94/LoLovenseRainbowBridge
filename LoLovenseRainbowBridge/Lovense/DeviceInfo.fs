@@ -189,6 +189,14 @@ module DeviceInfo =
         with _ ->
             None
 
+    let private supportedFunctionsFromProfiles (profiles: LovenseToyCapabilityProfile list) =
+        let functions =
+            profiles
+            |> List.collect (fun profile -> profile.SupportedFunctions |> Set.toList)
+            |> Set.ofList
+
+        if functions.IsEmpty then None else Some functions
+
     let private textContains (needle: string) (values: string option list) =
         values
         |> List.exists (fun value ->
@@ -230,10 +238,10 @@ module DeviceInfo =
                 [ "Unknown toy type; using safe universal functions." ]
 
         let supported =
-            if toy.ExplicitFunctions.IsEmpty then
-                inferred
-            else
-                Set.union toy.ExplicitFunctions (set [ Constants.Lovense.AllAction; Constants.Lovense.StopAction ])
+            toy.ExplicitFunctions
+            |> Set.union inferred
+            |> Set.add Constants.Lovense.AllAction
+            |> Set.add Constants.Lovense.StopAction
 
         let source =
             if not toy.ExplicitFunctions.IsEmpty then Explicit else source
@@ -257,14 +265,23 @@ module DeviceInfo =
 
     let parse (rawText: string) =
         let toyList = parseToyList rawText
+        let capabilityProfiles = toyList |> List.map inferToyCapabilityProfile
+        let profileFunctions = supportedFunctionsFromProfiles capabilityProfiles
+        let legacyFunctions = tryExtractSupportedFunctions rawText
+        let supportedFunctions =
+            match profileFunctions, legacyFunctions with
+            | Some left, Some right -> Some(Set.union left right)
+            | Some functions, None
+            | None, Some functions -> Some functions
+            | None, None -> None
         let root =
             try JsonNode.Parse(rawText)
             with _ -> null
 
         {
             ToyList = toyList
-            SupportedFunctions = tryExtractSupportedFunctions rawText
-            CapabilityProfiles = toyList |> List.map inferToyCapabilityProfile
+            CapabilityProfiles = capabilityProfiles
+            SupportedFunctions = supportedFunctions
             Domain = if isNull root then None else findValueByName "domain" root |> Option.bind (fun node -> try Some(node.GetValue<string>()) with _ -> None)
             HttpsPort = if isNull root then None else findValueByName "httpsPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
             HttpPort = if isNull root then None else findValueByName "httpPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
@@ -273,15 +290,11 @@ module DeviceInfo =
 
     let parseGetToys (rawText: string) =
         let toyList = parseGetToysToyList rawText
+        let capabilityProfiles = toyList |> List.map inferToyCapabilityProfile
         {
             ToyList = toyList
-            SupportedFunctions =
-                let functions =
-                    toyList
-                    |> List.collect (fun toy -> toy.ExplicitFunctions |> Set.toList)
-                    |> Set.ofList
-                if functions.IsEmpty then None else Some functions
-            CapabilityProfiles = toyList |> List.map inferToyCapabilityProfile
+            CapabilityProfiles = capabilityProfiles
+            SupportedFunctions = supportedFunctionsFromProfiles capabilityProfiles
             Domain = None
             HttpsPort = None
             HttpPort = None
@@ -290,19 +303,23 @@ module DeviceInfo =
 
     let parseStandardCallback (rawText: string) =
         let toyList = parseGetToysToyList rawText
+        let capabilityProfiles = toyList |> List.map inferToyCapabilityProfile
+        let profileFunctions = supportedFunctionsFromProfiles capabilityProfiles
+        let legacyFunctions = tryExtractSupportedFunctions rawText
+        let supportedFunctions =
+            match profileFunctions, legacyFunctions with
+            | Some left, Some right -> Some(Set.union left right)
+            | Some functions, None
+            | None, Some functions -> Some functions
+            | None, None -> None
         let root =
             try JsonNode.Parse(rawText)
             with _ -> null
 
         {
             ToyList = toyList
-            SupportedFunctions =
-                let functions =
-                    toyList
-                    |> List.collect (fun toy -> toy.ExplicitFunctions |> Set.toList)
-                    |> Set.ofList
-                if functions.IsEmpty then tryExtractSupportedFunctions rawText else Some functions
-            CapabilityProfiles = toyList |> List.map inferToyCapabilityProfile
+            CapabilityProfiles = capabilityProfiles
+            SupportedFunctions = supportedFunctions
             Domain = if isNull root then None else findValueByName "domain" root |> Option.bind (fun node -> try Some(node.GetValue<string>()) with _ -> None)
             HttpsPort = if isNull root then None else findValueByName "httpsPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
             HttpPort = if isNull root then None else findValueByName "httpPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)

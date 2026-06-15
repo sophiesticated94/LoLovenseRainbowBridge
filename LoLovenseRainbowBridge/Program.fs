@@ -156,7 +156,17 @@ module Program =
         | None, false ->
             use leagueClient = new LeagueLiveClient(config.League.BaseUrl, logger)
             use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger)
+            let qrPresenter =
+                if config.Lovense.StandardApi.Enable then
+                    Some(new LovenseQrWindowPresenter())
+                else
+                    None
+
             lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult() |> ignore
+            qrPresenter
+            |> Option.iter (fun presenter ->
+                presenter.Update(lovenseClient.LatestStandardQrCode |> Option.map (fun cached -> cached.Value)))
+
             let runtimeCache = RuntimeState.RuntimeStateCache()
             use serviceProvider =
                 ServiceCollection()
@@ -172,6 +182,7 @@ module Program =
                 [
                     LeagueCacheJob(config.Runtime, config.Scoring, leagueClient, runtimeCache, logger) :> IAppJob
                     OcrCacheJob(config.Runtime, config.PositionBasedRotation, runtimeCache, logger) :> IAppJob
+                    ToyCacheJob(config.Runtime, config.Lovense, lovenseClient, runtimeCache, logger) :> IAppJob
                     LovenseRuleJob(config.Runtime, config.Scoring, config.Lovense, lovenseClient, commandBuilder, runtimeCache, logger, recorder, (configSummary config)) :> IAppJob
                 ]
 
@@ -194,8 +205,6 @@ module Program =
                 |> List.map (fun job -> job.RunAsync cts.Token)
                 |> Task.WhenAll
                 |> fun task -> task.GetAwaiter().GetResult()
-
-                0
             finally
                 recorder |> Option.iter (fun recorder -> recorder.CloseActiveGame(DateTimeOffset.UtcNow))
 
@@ -233,3 +242,6 @@ module Program =
                             errorType = ex.GetType().FullName
                         |}
                     )
+
+            qrPresenter |> Option.iter (fun presenter -> (presenter :> IDisposable).Dispose()) |> ignore
+            0

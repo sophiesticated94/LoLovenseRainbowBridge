@@ -28,13 +28,10 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
             LatestDeviceInfo = None
         }
 
-    let mutable nextLocalCapabilityRefreshAt = DateTimeOffset.MinValue
     let mutable standardCallbackServer: StandardApiCallbackServer option = None
 
     let handleDeviceInfo (deviceInfo: LovenseDeviceInfo) =
-        let updatedSession = ClientState.applyDeviceInfo deviceInfo session
-        nextLocalCapabilityRefreshAt <- DateTimeOffset.MinValue
-        session <- updatedSession
+        session <- ClientState.applyDeviceInfo deviceInfo session
 
     let handleQrCode () =
         if not session.QrCodeLogged then
@@ -47,6 +44,11 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
         | None -> Constants.Lovense.GetSocketUrl
 
     member _.LatestDeviceInfo = session.LatestDeviceInfo
+
+    member _.LatestStandardQrCode = session.StandardQrCode
+
+    member _.ApplyDeviceInfo(deviceInfo: LovenseDeviceInfo) =
+        session <- ClientState.applyDeviceInfo deviceInfo session
 
     member _.PrepareStandardApiAsync(ct: CancellationToken) =
         task {
@@ -65,7 +67,7 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
 
     member this.SendCommandPlanAsync(plan: LovenseCommandPlan, requestedValue: int, ruleTraces: LovenseRuleEvaluationTrace list, ct: CancellationToken) =
         task {
-            let! (commandResult, updatedSession, newCallbackServer, newNextRefresh) =
+            let! (commandResult, updatedSession, newCallbackServer) =
                 ClientCommand.sendCommandPlanAsync
                     http
                     localHttp
@@ -74,7 +76,6 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                     scoringConfig
                     session
                     standardCallbackServer
-                    nextLocalCapabilityRefreshAt
                     connectGate
                     handleDeviceInfo
                     handleQrCode
@@ -84,7 +85,6 @@ type LovenseClient(config: LovenseConfig, scoringConfig: ScoringConfig, logger: 
                     ct
             session <- updatedSession
             standardCallbackServer <- newCallbackServer
-            nextLocalCapabilityRefreshAt <- newNextRefresh
             return commandResult
         }
 

@@ -154,18 +154,20 @@ module StandardApi =
             | _ ->
                 Ok(DeviceInfo.parseStandardCallback rawBody)
 
-    let private normalizeListenPrefix (url: string) =
+    let normalizeListenPrefix (url: string) =
         let text = if url.EndsWith("/", StringComparison.Ordinal) then url else url + "/"
-        let uri = Uri(text)
-        let host =
-            if String.Equals(uri.Host, "0.0.0.0", StringComparison.Ordinal) then
-                "+"
-            else
-                uri.Host
 
-        let builder = UriBuilder(uri)
-        builder.Host <- host
-        builder.Uri.AbsoluteUri
+        match Uri.TryCreate(text, UriKind.Absolute) with
+        | true, uri ->
+            let host =
+                if String.Equals(uri.Host, "0.0.0.0", StringComparison.Ordinal) then
+                    "+"
+                else
+                    uri.Host
+
+            $"{uri.Scheme}://{host}:{uri.Port}{uri.AbsolutePath}"
+        | _ ->
+            invalidArg (nameof url) $"Invalid callback listen URL '{url}'."
 
     let startCallbackListener
         (logger: StructuredSessionLogger)

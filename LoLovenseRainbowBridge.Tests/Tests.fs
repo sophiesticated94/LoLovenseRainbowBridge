@@ -260,12 +260,15 @@ let defaultRuntimeRuleContext =
         LolDataAcquired = true
         OcrDataAcquired = true
         LovenseDataAcquired = true
+        ToyDataAcquired = true
         LolUnavailableElapsedMs = 0L
         OcrUnavailableElapsedMs = 0L
         LovenseUnavailableElapsedMs = 0L
+        ToyUnavailableElapsedMs = 0L
         LolFailureAttemptsSinceSuccess = 0
         OcrFailureAttemptsSinceSuccess = 0
         LovenseFailureAttemptsSinceSuccess = 0
+        ToyFailureAttemptsSinceSuccess = 0
     }
 
 let testAssetPath fileName =
@@ -528,6 +531,52 @@ let ``lovense local get toys parser handles toys object`` () =
     Assert.False(profile.StereoVibrationSupported)
 
 [<Fact>]
+let ``lovense toy capability merge preserves inferred stereo support`` () =
+    let previous =
+        DeviceInfo.parseGetToys
+            """
+            {
+              "code": 200,
+              "data": {
+                "toys": {
+                  "toy-1": {
+                    "id": "toy-1",
+                    "name": "Gemini",
+                    "fullFunctionNames": ["Vibrate1", "Vibrate2"],
+                    "shortFunctionNames": ["Vibrate"]
+                  }
+                }
+              }
+            }
+            """
+
+    let sparseUpdate =
+        DeviceInfo.parseGetToys
+            """
+            {
+              "code": 200,
+              "data": {
+                "toys": {
+                  "toy-1": {
+                    "id": "toy-1",
+                    "name": "Gemini",
+                    "fullFunctionNames": ["Vibrate"],
+                    "shortFunctionNames": ["Vibrate"]
+                  }
+                }
+              }
+            }
+            """
+
+    let merged = ClientState.mergeDeviceInfo (Some previous) sparseUpdate
+    let profile = Assert.Single(merged.CapabilityProfiles)
+
+    Assert.True(profile.SupportedFunctions.Contains("Vibrate"))
+    Assert.True(profile.SupportedFunctions.Contains("Vibrate1"))
+    Assert.True(profile.SupportedFunctions.Contains("Vibrate2"))
+    Assert.True(profile.StereoVibrationSupported)
+
+[<Fact>]
 let ``lovense local get toys client posts command and parses response`` () =
     let mutable capturedUrl = ""
     let mutable capturedPlatform = ""
@@ -648,8 +697,19 @@ let ``lovense local get toys falls back from https to http endpoint`` () =
             CapabilityRefreshIntervalSec = 60
         }
 
+    let deviceInfo =
+        {
+            ToyList = []
+            SupportedFunctions = None
+            CapabilityProfiles = []
+            Domain = localConfig.Domain
+            HttpsPort = localConfig.HttpsPort
+            HttpPort = localConfig.HttpPort
+            WssPort = None
+        }
+
     let result =
-        LocalApi.getConfiguredToysAsync http logger localConfig CancellationToken.None
+        LocalApi.getToysAsync http logger localConfig deviceInfo CancellationToken.None
         |> fun task -> task.GetAwaiter().GetResult()
 
     match result with
@@ -697,8 +757,19 @@ let ``lovense local get toys treats endpoint timeout as fallback error`` () =
             CapabilityRefreshIntervalSec = 60
         }
 
+    let deviceInfo =
+        {
+            ToyList = []
+            SupportedFunctions = None
+            CapabilityProfiles = []
+            Domain = localConfig.Domain
+            HttpsPort = localConfig.HttpsPort
+            HttpPort = localConfig.HttpPort
+            WssPort = None
+        }
+
     let result =
-        LocalApi.getConfiguredToysAsync http logger localConfig CancellationToken.None
+        LocalApi.getToysAsync http logger localConfig deviceInfo CancellationToken.None
         |> fun task -> task.GetAwaiter().GetResult()
 
     match result with
@@ -794,7 +865,7 @@ let ``lovense auto command falls back instead of cold not connected`` () =
                 Developer = { Token = None; UserId = None; UserName = None; UserToken = None }
         }
 
-    let result, _, _, _ =
+    let commandTask =
         ClientCommand.sendCommandPlanAsync
             http
             localHttp
@@ -812,7 +883,6 @@ let ``lovense auto command falls back instead of cold not connected`` () =
                 LatestDeviceInfo = None
             }
             None
-            DateTimeOffset.MinValue
             connectGate
             ignore
             ignore
@@ -820,7 +890,8 @@ let ``lovense auto command falls back instead of cold not connected`` () =
             8
             []
             CancellationToken.None
-        |> fun task -> task.GetAwaiter().GetResult()
+
+    let result, _, _ = commandTask.GetAwaiter().GetResult()
 
     match result with
     | Ok response ->
@@ -920,6 +991,12 @@ let ``lovense standard callback listener forwards device info to owner callback`
             Assert.True((Assert.Single(received.Value.CapabilityProfiles)).StereoVibrationSupported)
         finally
             server.Stop()
+
+[<Fact>]
+let ``lovense standard callback prefix normalization accepts wildcard host`` () =
+    let prefix = StandardApi.normalizeListenPrefix "http://0.0.0.0:17878/lovense/callback/"
+
+    Assert.Equal("http://+:17878/lovense/callback/", prefix)
 
 [<Fact>]
 let ``lovense standard callback rejects unexpected uid`` () =

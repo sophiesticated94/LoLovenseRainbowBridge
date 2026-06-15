@@ -11,17 +11,6 @@ module LocalApi =
 
     let private getToysBody = $"""{{"command":"{Constants.Lovense.GetToysCommand}"}}"""
 
-    let private configuredDeviceInfo (config: LovenseLocalApiConfig) =
-        {
-            ToyList = []
-            SupportedFunctions = None
-            CapabilityProfiles = []
-            Domain = config.Domain
-            HttpsPort = config.HttpsPort
-            HttpPort = config.HttpPort
-            WssPort = None
-        }
-
     let private commandUrl scheme domain port =
         $"{scheme}://{domain}:{port}{Constants.Lovense.LocalCommandPath}"
 
@@ -190,14 +179,6 @@ module LocalApi =
             | _ ->
                 return Error(SocketUrlRequestFailed(Constants.Lovense.LocalCommandPath, "Local API GetToys is disabled or socket device info did not include domain/httpsPort."))
         }
-
-    let getConfiguredToysAsync
-        (http: HttpClient)
-        (logger: StructuredSessionLogger)
-        (config: LovenseLocalApiConfig)
-        (ct: CancellationToken)
-        =
-        getToysAsync http logger config (configuredDeviceInfo config) ct
 
     let sendCommandAsync
         (http: HttpClient)

@@ -94,57 +94,6 @@ module ClientCommand =
                 notes = profile.Notes
             |})
 
-    let private tryRefreshLocalGetToysAsync (localHttp: HttpClient) (logger: StructuredSessionLogger) (config: LovenseConfig) (session: LovenseSessionState) (nextLocalCapabilityRefreshAt: DateTimeOffset) (ct: CancellationToken) =
-        task {
-            let now = DateTimeOffset.UtcNow
-
-            if not config.LocalApi.EnableGetToys || now < nextLocalCapabilityRefreshAt then
-                return (session, nextLocalCapabilityRefreshAt)
-            else
-                let newNextRefresh = now.AddSeconds(float config.LocalApi.CapabilityRefreshIntervalSec)
-
-                let deviceInfo =
-                    session.LatestDeviceInfo
-                    |> Option.defaultValue
-                        {
-                            ToyList = []
-                            SupportedFunctions = session.SupportedFunctions
-                            CapabilityProfiles = session.CapabilityProfiles
-                            Domain = config.LocalApi.Domain
-                            HttpsPort = config.LocalApi.HttpsPort
-                            HttpPort = config.LocalApi.HttpPort
-                            WssPort = None
-                        }
-
-                let! result = LocalApi.getToysAsync localHttp logger config.LocalApi deviceInfo ct
-
-                match result with
-                | Ok localInfo when not localInfo.CapabilityProfiles.IsEmpty ->
-                    let merged =
-                        {
-                            deviceInfo with
-                                ToyList = localInfo.ToyList
-                                SupportedFunctions = localInfo.SupportedFunctions |> Option.orElse deviceInfo.SupportedFunctions
-                                CapabilityProfiles = localInfo.CapabilityProfiles
-                        }
-
-                    let updatedSession = ClientState.applyDeviceInfo merged session
-                    logger.Debug(
-                        "lovense.local_get_toys.cache_refreshed",
-                        "Lovense Local API capability cache refreshed.",
-                        {| nextRefreshAt = newNextRefresh; toyCount = merged.ToyList.Length |}
-                    )
-                    return (updatedSession, newNextRefresh)
-                | Error error ->
-                    logger.Debug(
-                        "lovense.local_get_toys.cache_refresh_skipped",
-                        "Lovense Local API capability cache refresh failed; old cache remains active.",
-                        {| nextRefreshAt = newNextRefresh; error = string error |}
-                    )
-                    return (session, newNextRefresh)
-                | _ -> return (session, newNextRefresh)
-        }
-
     let sendCommandPlanAsync
         (http: HttpClient)
         (localHttp: HttpClient)
@@ -153,7 +102,6 @@ module ClientCommand =
         (scoringConfig: ScoringConfig)
         (session: LovenseSessionState)
         (standardCallbackServer: StandardApiCallbackServer option)
-        (nextLocalCapabilityRefreshAt: DateTimeOffset)
         (connectGate: Threading.SemaphoreSlim)
         (onDeviceInfo: LovenseDeviceInfo -> unit)
         (onQrCode: unit -> unit)
@@ -166,9 +114,8 @@ module ClientCommand =
             let safeValue = requestedValue |> Shared.clamp scoringConfig.MinIntensity scoringConfig.MaxIntensity
             let correlationId = Transport.newCorrelationId()
             let! (updatedSession1, newCallbackServer) = ClientConnection.ensureStandardApiReadyAsync http logger config session standardCallbackServer onDeviceInfo ct
-            let! (updatedSession2, newNextRefresh) = tryRefreshLocalGetToysAsync localHttp logger config updatedSession1 nextLocalCapabilityRefreshAt ct
             let candidateActionString = LovenseActionCodec.planActionString plan
-            let capabilityResolution = CapabilityResolver.resolve config updatedSession2.CapabilityProfiles updatedSession2.SupportedFunctions plan
+            let capabilityResolution = CapabilityResolver.resolve config updatedSession1.CapabilityProfiles updatedSession1.SupportedFunctions plan
             let filteredPlan = capabilityResolution.Plan
             let droppedActions = capabilityResolution.DroppedActions
             let actionString = LovenseActionCodec.planActionString filteredPlan
@@ -224,7 +171,7 @@ module ClientCommand =
                             DryRun = config.DryRun
                             CorrelationId = correlationId
                             SocketConnected = false
-                        }, updatedSession2, newCallbackServer, newNextRefresh)
+                        }, updatedSession1, newCallbackServer)
             else
                 let payload = createCommandPayload filteredPlan correlationId
 
@@ -250,7 +197,7 @@ module ClientCommand =
                                 DryRun = true
                                 CorrelationId = correlationId
                                 SocketConnected = false
-                            }, updatedSession2, newCallbackServer, newNextRefresh)
+                            }, updatedSession1, newCallbackServer)
                 else
                     let transportMode = config.TransportMode.ToUpperInvariant()
 
@@ -261,7 +208,7 @@ module ClientCommand =
                         StandardApi.sendServerCommandAsync http logger config.Developer filteredPlan correlationId ct
 
                     if transportMode = "STANDARDAPILOCAL" then
-                        let! localResult = sendLocalCommandAsync updatedSession2
+                        let! localResult = sendLocalCommandAsync updatedSession1
 
                         match localResult with
                         | Ok _ ->
@@ -273,7 +220,7 @@ module ClientCommand =
                                         DryRun = false
                                         CorrelationId = correlationId
                                         SocketConnected = false
-                                    }, updatedSession2, newCallbackServer, newNextRefresh)
+                                    }, updatedSession1, newCallbackServer)
                         | Error localError when config.StandardApi.UseServerCommandFallback ->
                             let! serverResult = sendStandardServerCommandAsync ()
                             match serverResult with
@@ -286,9 +233,9 @@ module ClientCommand =
                                             DryRun = false
                                             CorrelationId = correlationId
                                             SocketConnected = false
-                                        }, updatedSession2, newCallbackServer, newNextRefresh)
-                            | Error serverError -> return (Error serverError, updatedSession2, newCallbackServer, newNextRefresh)
-                        | Error localError -> return (Error localError, updatedSession2, newCallbackServer, newNextRefresh)
+                                        }, updatedSession1, newCallbackServer)
+                            | Error serverError -> return (Error serverError, updatedSession1, newCallbackServer)
+                        | Error localError -> return (Error localError, updatedSession1, newCallbackServer)
                     elif transportMode = "STANDARDAPISERVER" then
                         let! serverResult = sendStandardServerCommandAsync ()
                         match serverResult with
@@ -301,15 +248,15 @@ module ClientCommand =
                                         DryRun = false
                                         CorrelationId = correlationId
                                         SocketConnected = false
-                                    }, updatedSession2, newCallbackServer, newNextRefresh)
-                        | Error serverError -> return (Error serverError, updatedSession2, newCallbackServer, newNextRefresh)
+                                    }, updatedSession1, newCallbackServer)
+                        | Error serverError -> return (Error serverError, updatedSession1, newCallbackServer)
                     else
                         let! (connected, connectedSession, connectedCallbackServer) =
                             ClientConnection.ensureConnectedAsync
                                 http
                                 logger
                                 config
-                                updatedSession2
+                                updatedSession1
                                 newCallbackServer
                                 connectGate
                                 onDeviceInfo
@@ -344,7 +291,7 @@ module ClientCommand =
                                                     DryRun = false
                                                     CorrelationId = correlationId
                                                     SocketConnected = false
-                                                }, currentSession, currentCallbackServer, newNextRefresh)
+                                                }, currentSession, currentCallbackServer)
                                     | Error localError when config.StandardApi.UseServerCommandFallback ->
                                         let! serverResult = sendStandardServerCommandAsync ()
 
@@ -358,11 +305,11 @@ module ClientCommand =
                                                         DryRun = false
                                                         CorrelationId = correlationId
                                                         SocketConnected = false
-                                                    }, currentSession, currentCallbackServer, newNextRefresh)
+                                                    }, currentSession, currentCallbackServer)
                                         | Error serverError ->
-                                            return (Error serverError, currentSession, currentCallbackServer, newNextRefresh)
+                                            return (Error serverError, currentSession, currentCallbackServer)
                                     | Error localError ->
-                                        return (Error localError, currentSession, currentCallbackServer, newNextRefresh)
+                                        return (Error localError, currentSession, currentCallbackServer)
                                 elif transportMode = "AUTO" && config.StandardApi.UseServerCommandFallback then
                                     let! serverResult = sendStandardServerCommandAsync ()
 
@@ -376,11 +323,11 @@ module ClientCommand =
                                                     DryRun = false
                                                     CorrelationId = correlationId
                                                     SocketConnected = false
-                                                }, currentSession, currentCallbackServer, newNextRefresh)
+                                                }, currentSession, currentCallbackServer)
                                     | Error serverError ->
-                                        return (Error serverError, currentSession, currentCallbackServer, newNextRefresh)
+                                        return (Error serverError, currentSession, currentCallbackServer)
                                 else
-                                    return (Error(NotConnected socketError), currentSession, currentCallbackServer, newNextRefresh)
+                                    return (Error(NotConnected socketError), currentSession, currentCallbackServer)
                             }
 
                         match connected with
@@ -419,7 +366,8 @@ module ClientCommand =
                                                 DryRun = false
                                                 CorrelationId = correlationId
                                                 SocketConnected = true
-                                            }, connectedSession, connectedCallbackServer, newNextRefresh)
+                                            }, connectedSession, connectedCallbackServer)
                                 | Error error ->
-                                    return (Error error, connectedSession, connectedCallbackServer, newNextRefresh)
+                                    return (Error error, connectedSession, connectedCallbackServer)
         }
+
