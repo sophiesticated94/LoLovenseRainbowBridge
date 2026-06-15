@@ -152,7 +152,7 @@ module StandardApi =
             | Some _, None ->
                 Error "Callback did not include configured utoken."
             | _ ->
-                Ok(DeviceInfo.parseStandardCallback rawBody)
+                Ok(DeviceInfo.parse rawBody)
 
     let normalizeListenPrefix (url: string) =
         let text = if url.EndsWith("/", StringComparison.Ordinal) then url else url + "/"

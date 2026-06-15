@@ -32,18 +32,54 @@ module DeviceInfo =
                 try Some(value.GetValue<bool>())
                 with _ ->
                     try
-                        match value.GetValue<string>() with
-                        | text when String.Equals(text, "true", StringComparison.OrdinalIgnoreCase) -> Some true
-                        | text when String.Equals(text, "false", StringComparison.OrdinalIgnoreCase) -> Some false
-                        | _ -> None
+                        match value.GetValue<int64>() with
+                        | 0L -> Some false
+                        | 1L -> Some true
+                        | number -> Some(number <> 0L)
                     with _ ->
-                        None))
+                        try
+                            match value.GetValue<string>() with
+                            | text when String.Equals(text, "true", StringComparison.OrdinalIgnoreCase) -> Some true
+                            | text when String.Equals(text, "false", StringComparison.OrdinalIgnoreCase) -> Some false
+                            | text ->
+                                match Int64.TryParse(text) with
+                                | true, 0L -> Some false
+                                | true, 1L -> Some true
+                                | true, number -> Some(number <> 0L)
+                                | false, _ -> None
+                        with _ ->
+                            None))
 
     let private tryStringByNames names (node: JsonNode) =
         names |> List.tryPick (fun name -> Json.tryString name node)
 
     let private tryIntByNames names (node: JsonNode) =
         names |> List.tryPick (fun name -> Json.tryInt name node)
+
+    let private tryStringNode (node: JsonNode) =
+        if isNull node then
+            None
+        else
+            try
+                Some(node.GetValue<string>())
+            with _ ->
+                None
+
+    let private tryIntNode (node: JsonNode) =
+        if isNull node then
+            None
+        else
+            try
+                Some(node.GetValue<int>())
+            with _ ->
+                try
+                    match node.GetValue<string>() with
+                    | text ->
+                        match Int32.TryParse(text) with
+                        | true, value -> Some value
+                        | false, _ -> None
+                with _ ->
+                    None
 
     let private findArrayByName name (root: JsonNode) =
         let rec find (node: JsonNode) =
@@ -96,13 +132,15 @@ module DeviceInfo =
             else
                 match node with
                 | :? JsonValue as value ->
-                    try
-                        let text = value.GetValue<string>()
+                    let text = value.ToJsonString()
+
+                    if text.Length >= 2 && text.StartsWith("\"", StringComparison.Ordinal) && text.EndsWith("\"", StringComparison.Ordinal) then
+                        let text = text.Substring(1, text.Length - 2)
 
                         knownFunctionNames
                         |> Seq.filter (fun name -> text.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
                         |> Set.ofSeq
-                    with _ ->
+                    else
                         Set.empty
                 | :? JsonArray as array ->
                     array
@@ -130,6 +168,19 @@ module DeviceInfo =
             ExplicitFunctions = collectSupportedFunctionsFromNode node
         }
 
+    let private parseToyCollectionFromNode (toysNode: JsonNode) =
+        match toysNode with
+        | :? JsonObject as toysObject ->
+            toysObject
+            |> Seq.choose (fun pair -> if isNull pair.Value then None else Some(toyFromNode pair.Value))
+            |> List.ofSeq
+        | :? JsonArray as toysArray ->
+            toysArray
+            |> Seq.choose (fun item -> if isNull item then None else Some(toyFromNode item))
+            |> List.ofSeq
+        | _ ->
+            []
+
     let parseToyList (rawText: string) =
         try
             let root = JsonNode.Parse(rawText)
@@ -138,11 +189,26 @@ module DeviceInfo =
                 []
             else
                 match findArrayByName "toyList" root with
-                | None -> []
                 | Some toyList ->
                     toyList
                     |> Seq.choose (fun item -> if isNull item then None else Some(toyFromNode item))
                     |> List.ofSeq
+                | None ->
+                    match findValueByName "toys" root with
+                    | Some toysNode ->
+                        let toysNode =
+                            match toysNode with
+                            | :? JsonValue as value ->
+                                try
+                                    let text = value.GetValue<string>()
+                                    if String.IsNullOrWhiteSpace text then toysNode else JsonNode.Parse(text)
+                                with _ ->
+                                    toysNode
+                            | _ ->
+                                toysNode
+
+                        parseToyCollectionFromNode toysNode
+                    | None -> []
         with _ ->
             []
 
@@ -167,17 +233,7 @@ module DeviceInfo =
                         | _ ->
                             toysNode
 
-                    match toysNode with
-                    | :? JsonObject as toysObject ->
-                        toysObject
-                        |> Seq.choose (fun pair -> if isNull pair.Value then None else Some(toyFromNode pair.Value))
-                        |> List.ofSeq
-                    | :? JsonArray as toysArray ->
-                        toysArray
-                        |> Seq.choose (fun item -> if isNull item then None else Some(toyFromNode item))
-                        |> List.ofSeq
-                    | _ ->
-                        []
+                    parseToyCollectionFromNode toysNode
         with _ ->
             []
 
@@ -282,10 +338,10 @@ module DeviceInfo =
             ToyList = toyList
             CapabilityProfiles = capabilityProfiles
             SupportedFunctions = supportedFunctions
-            Domain = if isNull root then None else findValueByName "domain" root |> Option.bind (fun node -> try Some(node.GetValue<string>()) with _ -> None)
-            HttpsPort = if isNull root then None else findValueByName "httpsPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
-            HttpPort = if isNull root then None else findValueByName "httpPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
-            WssPort = if isNull root then None else findValueByName "wssPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
+            Domain = if isNull root then None else findValueByName "domain" root |> Option.bind tryStringNode
+            HttpsPort = if isNull root then None else findValueByName "httpsPort" root |> Option.bind tryIntNode
+            HttpPort = if isNull root then None else findValueByName "httpPort" root |> Option.bind tryIntNode
+            WssPort = if isNull root then None else findValueByName "wssPort" root |> Option.bind tryIntNode
         }
 
     let parseGetToys (rawText: string) =
@@ -299,31 +355,6 @@ module DeviceInfo =
             HttpsPort = None
             HttpPort = None
             WssPort = None
-        }
-
-    let parseStandardCallback (rawText: string) =
-        let toyList = parseGetToysToyList rawText
-        let capabilityProfiles = toyList |> List.map inferToyCapabilityProfile
-        let profileFunctions = supportedFunctionsFromProfiles capabilityProfiles
-        let legacyFunctions = tryExtractSupportedFunctions rawText
-        let supportedFunctions =
-            match profileFunctions, legacyFunctions with
-            | Some left, Some right -> Some(Set.union left right)
-            | Some functions, None
-            | None, Some functions -> Some functions
-            | None, None -> None
-        let root =
-            try JsonNode.Parse(rawText)
-            with _ -> null
-
-        {
-            ToyList = toyList
-            CapabilityProfiles = capabilityProfiles
-            SupportedFunctions = supportedFunctions
-            Domain = if isNull root then None else findValueByName "domain" root |> Option.bind (fun node -> try Some(node.GetValue<string>()) with _ -> None)
-            HttpsPort = if isNull root then None else findValueByName "httpsPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
-            HttpPort = if isNull root then None else findValueByName "httpPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
-            WssPort = if isNull root then None else findValueByName "wssPort" root |> Option.bind (fun node -> try Some(node.GetValue<int>()) with _ -> try Some(int (node.GetValue<string>())) with _ -> None)
         }
 
     let callbackUid (rawText: string) =

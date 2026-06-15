@@ -35,6 +35,9 @@ type LovenseRuleJob
             breakdown.Intensity
             actionString
 
+    let shouldForceKeepAlive (plan: LovenseCommandPlan) =
+        plan.Reasons |> List.exists ((=) SourceNotConnected)
+
     interface IAppJob with
         member _.Name = "LovenseRuleJob"
 
@@ -83,18 +86,26 @@ type LovenseRuleJob
                             |}
                         )
 
-                        match commandFrame.ChangedPlan with
-                        | None ->
-                            logger.Debug(
-                                "runtime.lovense.no_function_changes",
-                                "Lovense command skipped because no function intensity changed.",
-                                {| fullAction = commandFrame.ActionString; fullFunctionState = commandFrame.FullFunctionState |}
-                            )
-                            do! Task.Delay(runtimeConfig.LovensePollMs, ct)
+                        let outgoing =
+                            match commandFrame.ChangedPlan with
+                            | Some changedPlan ->
+                                let changedActionString = LovenseActionCodec.planActionString changedPlan
+                                Some(changedPlan, changedActionString, false)
+                            | None when shouldForceKeepAlive commandFrame.Plan ->
+                                Some(commandFrame.Plan, commandFrame.ActionString, true)
+                            | None ->
+                                logger.Debug(
+                                    "runtime.lovense.no_function_changes",
+                                    "Lovense command skipped because no function intensity changed.",
+                                    {| fullAction = commandFrame.ActionString; fullFunctionState = commandFrame.FullFunctionState |}
+                                )
+                                None
 
-                        | Some changedPlan ->
-                            let changedActionString = LovenseActionCodec.planActionString changedPlan
-                            let! result = lovenseClient.SendCommandPlanAsync(changedPlan, commandFrame.Breakdown.Intensity, commandFrame.RuleTraces, ct)
+                        match outgoing with
+                        | None ->
+                            do! Task.Delay(runtimeConfig.LovensePollMs, ct)
+                        | Some(outgoingPlan, outgoingActionString, isKeepAlive) ->
+                            let! result = lovenseClient.SendCommandPlanAsync(outgoingPlan, commandFrame.Breakdown.Intensity, commandFrame.RuleTraces, ct)
 
                             match result with
                             | Ok result ->
@@ -110,17 +121,28 @@ type LovenseRuleJob
                                             recordingConfigSummary,
                                             snapshot,
                                             commandFrame.Breakdown,
-                                            changedPlan,
-                                            changedActionString,
+                                            outgoingPlan,
+                                            outgoingActionString,
                                             { Attempted = true; Success = Some true; Error = None }
                                         )))
 
+                                let successMessage =
+                                    if isKeepAlive then
+                                        "Lovense keepalive command sent successfully."
+                                    else
+                                        "Lovense diff command sent successfully."
+
                                 logger.Info(
                                     "runtime.lovense_job.send_success",
-                                    "Lovense diff command sent successfully.",
-                                    {| changedAction = changedActionString; changedFunctionState = commandFrame.ChangedFunctionState; fullAction = commandFrame.ActionString |}
+                                    successMessage,
+                                    {|
+                                        changedAction = outgoingActionString
+                                        changedFunctionState = commandFrame.ChangedFunctionState
+                                        fullAction = commandFrame.ActionString
+                                        keepAlive = isKeepAlive
+                                    |}
                                 )
-                                printStatus activeSnapshot commandFrame.Breakdown changedActionString
+                                printStatus activeSnapshot commandFrame.Breakdown outgoingActionString
                                 do! Task.Delay(runtimeConfig.LovensePollMs, ct)
 
                             | Error error ->
@@ -135,15 +157,26 @@ type LovenseRuleJob
                                             recordingConfigSummary,
                                             snapshot,
                                             commandFrame.Breakdown,
-                                            changedPlan,
-                                            changedActionString,
+                                            outgoingPlan,
+                                            outgoingActionString,
                                             { Attempted = true; Success = Some false; Error = Some(RuntimeState.lovenseErrorMessage error) }
                                         )))
 
+                                let failureMessage =
+                                    if isKeepAlive then
+                                        "Lovense keepalive command failed; last sent function state was not advanced."
+                                    else
+                                        "Lovense diff command failed; last sent function state was not advanced."
+
                                 logger.Error(
                                     "runtime.lovense_job.send_failed",
-                                    "Lovense diff command failed; last sent function state was not advanced.",
-                                    {| error = RuntimeState.lovenseErrorSummary error; changedAction = changedActionString; changedFunctionState = commandFrame.ChangedFunctionState |}
+                                    failureMessage,
+                                    {|
+                                        error = RuntimeState.lovenseErrorSummary error
+                                        changedAction = outgoingActionString
+                                        changedFunctionState = commandFrame.ChangedFunctionState
+                                        keepAlive = isKeepAlive
+                                    |}
                                 )
                                 do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
                     with
