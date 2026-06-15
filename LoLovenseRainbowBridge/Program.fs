@@ -130,7 +130,11 @@ module Program =
                 0
 
         | Some gameId, _ ->
-            use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger)
+            let runtimeCache = RuntimeState.RuntimeStateCache()
+            let readLovenseSession () = runtimeCache.Read().LovenseSession
+            let updateLovenseSession update =
+                runtimeCache.UpdateLovenseSession(update (runtimeCache.Read().LovenseSession))
+            use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger, readLovenseSession, updateLovenseSession)
             lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult() |> ignore
 
             match recorder with
@@ -154,22 +158,21 @@ module Program =
                     | Error error -> logger.Warn("app.lovense.disconnect_failed", "Lovense replay disconnect returned an error.", {| error = string error |})
 
         | None, false ->
+            let runtimeCache = RuntimeState.RuntimeStateCache()
             let qrPresenter =
                 if config.Lovense.StandardApi.Enable then
-                    Some(new LovenseQrWindowPresenter())
+                    Some(new LovenseQrWindowPresenter(runtimeCache))
                 else
                     None
 
             use leagueClient = new LeagueLiveClient(config.League.BaseUrl, logger)
-            use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger)
-
-            qrPresenter
-            |> Option.iter (fun presenter ->
-                lovenseClient.SetStandardQrCodeChangedCallback presenter.Update)
+            let readLovenseSession () = runtimeCache.Read().LovenseSession
+            let updateLovenseSession update =
+                runtimeCache.UpdateLovenseSession(update (runtimeCache.Read().LovenseSession))
+            use lovenseClient = new LovenseClient(config.Lovense, config.Scoring, logger, readLovenseSession, updateLovenseSession)
 
             lovenseClient.PrepareStandardApiAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult() |> ignore
 
-            let runtimeCache = RuntimeState.RuntimeStateCache()
             use serviceProvider =
                 ServiceCollection()
                     .AddSingleton<IRuleExpressionEvaluator, RuleExpressionEvaluator>()

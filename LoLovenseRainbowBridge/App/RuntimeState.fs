@@ -106,6 +106,11 @@ module RuntimeState =
             LastSuccessfulAt: DateTimeOffset option
             UnavailableSince: DateTimeOffset option
             LastError: string option
+            [<field: CalculatorVariable(Name = "CurrentIteration")>]
+            CurrentIteration: int64
+            LastCompletedCycleDurationMs: int64 option
+            LastCompletedAt: DateTimeOffset option
+            Status: string
             Version: int64
         }
 
@@ -205,6 +210,10 @@ module RuntimeState =
             LastSuccessfulAt: DateTimeOffset option
             UnavailableSince: DateTimeOffset option
             LastError: string option
+            CurrentIteration: int64
+            LastCompletedCycleDurationMs: int64 option
+            LastCompletedAt: DateTimeOffset option
+            Status: string
             Version: int64
         }
 
@@ -226,6 +235,10 @@ module RuntimeState =
             LastSuccessfulAt: DateTimeOffset option
             UnavailableSince: DateTimeOffset option
             LastError: string option
+            CurrentIteration: int64
+            LastCompletedCycleDurationMs: int64 option
+            LastCompletedAt: DateTimeOffset option
+            Status: string
             Version: int64
         }
 
@@ -237,6 +250,10 @@ module RuntimeState =
             LastSuccessfulAt: DateTimeOffset option
             UnavailableSince: DateTimeOffset option
             LastError: string option
+            CurrentIteration: int64
+            LastCompletedCycleDurationMs: int64 option
+            LastCompletedAt: DateTimeOffset option
+            Status: string
             Version: int64
         }
 
@@ -248,6 +265,7 @@ module RuntimeState =
             Ocr: OcrCacheState
             Lovense: LovenseCacheState
             Toys: ToyCacheState
+            LovenseSession: LovenseSessionSnapshot
         }
 
     let initialPositionRotationState =
@@ -256,7 +274,7 @@ module RuntimeState =
             DetectionFailures = 0
         }
 
-    let private initialLeagueCalculated =
+    let private initialLeagueCalculated: LeagueRuleCacheState =
         {
             Kills = 0.0
             Deaths = 0.0
@@ -308,6 +326,10 @@ module RuntimeState =
             LastSuccessfulAt = None
             UnavailableSince = Some DateTimeOffset.UtcNow
             LastError = None
+            CurrentIteration = 0L
+            LastCompletedCycleDurationMs = None
+            LastCompletedAt = None
+            Status = "N/A"
             Version = 0L
         }
 
@@ -339,6 +361,10 @@ module RuntimeState =
             LastSuccessfulAt = None
             UnavailableSince = Some DateTimeOffset.UtcNow
             LastError = None
+            CurrentIteration = 0L
+            LastCompletedCycleDurationMs = None
+            LastCompletedAt = None
+            Status = "N/A"
             Version = 0L
         }
 
@@ -370,6 +396,16 @@ module RuntimeState =
             LastActionString = None
         }
 
+    let private initialLovenseSession =
+        {
+            SocketInfo = None
+            StandardQrCode = None
+            QrCodeLogged = false
+            SupportedFunctions = None
+            CapabilityProfiles = []
+            LatestDeviceInfo = None
+        }
+
     let private initialLovense =
         {
             LoopIteration = 0.0
@@ -383,6 +419,10 @@ module RuntimeState =
             LastSuccessfulAt = None
             UnavailableSince = Some DateTimeOffset.UtcNow
             LastError = None
+            CurrentIteration = 0L
+            LastCompletedCycleDurationMs = None
+            LastCompletedAt = None
+            Status = "N/A"
             Version = 0L
         }
 
@@ -394,6 +434,10 @@ module RuntimeState =
             LastSuccessfulAt = None
             UnavailableSince = Some DateTimeOffset.UtcNow
             LastError = None
+            CurrentIteration = 0L
+            LastCompletedCycleDurationMs = None
+            LastCompletedAt = None
+            Status = "N/A"
             Version = 0L
         }
 
@@ -407,6 +451,7 @@ module RuntimeState =
                 Ocr = initialOcr
                 Lovense = initialLovense
                 Toys = initialToys
+                LovenseSession = initialLovenseSession
             }
 
         let syncRuntimeContext now =
@@ -452,6 +497,146 @@ module RuntimeState =
                                     LovenseIteration = builder.LovenseIteration
                                     LastFunctionState = builder.LastFunctionState
                                     LastActionString = builder.LastActionString
+                                }
+                    })
+
+        member _.UpdateLovenseSession(session: LovenseSessionSnapshot) =
+            lock gate (fun () ->
+                snapshot <- { snapshot with LovenseSession = session })
+
+        member _.UpdateLeagueCycleStarted() =
+            lock gate (fun () ->
+                let iteration = snapshot.League.CurrentIteration + 1L
+                snapshot <-
+                    {
+                        snapshot with
+                            League =
+                                {
+                                    snapshot.League with
+                                        CurrentIteration = iteration
+                                        Status = "Running"
+                                        Version = snapshot.League.Version + 1L
+                                }
+                    }
+                iteration
+            )
+
+        member _.UpdateLeagueCycleCompleted(iteration: int64, durationMs: int64, status: string) =
+            let now = DateTimeOffset.UtcNow
+            lock gate (fun () ->
+                snapshot <-
+                    {
+                        snapshot with
+                            League =
+                                {
+                                    snapshot.League with
+                                        CurrentIteration = iteration
+                                        LastCompletedCycleDurationMs = Some(max 0L durationMs)
+                                        LastCompletedAt = Some now
+                                        Status = status
+                                        Version = snapshot.League.Version + 1L
+                                }
+                    })
+
+        member _.UpdateOcrCycleStarted() =
+            lock gate (fun () ->
+                let iteration = snapshot.Ocr.CurrentIteration + 1L
+                snapshot <-
+                    {
+                        snapshot with
+                            Ocr =
+                                {
+                                    snapshot.Ocr with
+                                        CurrentIteration = iteration
+                                        Status = "Running"
+                                        Version = snapshot.Ocr.Version + 1L
+                                }
+                    }
+                iteration
+            )
+
+        member _.UpdateOcrCycleCompleted(iteration: int64, durationMs: int64, status: string) =
+            let now = DateTimeOffset.UtcNow
+            lock gate (fun () ->
+                snapshot <-
+                    {
+                        snapshot with
+                            Ocr =
+                                {
+                                    snapshot.Ocr with
+                                        CurrentIteration = iteration
+                                        LastCompletedCycleDurationMs = Some(max 0L durationMs)
+                                        LastCompletedAt = Some now
+                                        Status = status
+                                        Version = snapshot.Ocr.Version + 1L
+                                }
+                    })
+
+        member _.UpdateLovenseCycleStarted() =
+            lock gate (fun () ->
+                let iteration = snapshot.Lovense.CurrentIteration + 1L
+                snapshot <-
+                    {
+                        snapshot with
+                            Lovense =
+                                {
+                                    snapshot.Lovense with
+                                        CurrentIteration = iteration
+                                        Status = "Running"
+                                        Version = snapshot.Lovense.Version + 1L
+                                }
+                    }
+                iteration
+            )
+
+        member _.UpdateLovenseCycleCompleted(iteration: int64, durationMs: int64, status: string) =
+            let now = DateTimeOffset.UtcNow
+            lock gate (fun () ->
+                snapshot <-
+                    {
+                        snapshot with
+                            Lovense =
+                                {
+                                    snapshot.Lovense with
+                                        CurrentIteration = iteration
+                                        LastCompletedCycleDurationMs = Some(max 0L durationMs)
+                                        LastCompletedAt = Some now
+                                        Status = status
+                                        Version = snapshot.Lovense.Version + 1L
+                                }
+                    })
+
+        member _.UpdateToyCycleStarted() =
+            lock gate (fun () ->
+                let iteration = snapshot.Toys.CurrentIteration + 1L
+                snapshot <-
+                    {
+                        snapshot with
+                            Toys =
+                                {
+                                    snapshot.Toys with
+                                        CurrentIteration = iteration
+                                        Status = "Running"
+                                        Version = snapshot.Toys.Version + 1L
+                                }
+                    }
+                iteration
+            )
+
+        member _.UpdateToyCycleCompleted(iteration: int64, durationMs: int64, status: string) =
+            let now = DateTimeOffset.UtcNow
+            lock gate (fun () ->
+                snapshot <-
+                    {
+                        snapshot with
+                            Toys =
+                                {
+                                    snapshot.Toys with
+                                        CurrentIteration = iteration
+                                        LastCompletedCycleDurationMs = Some(max 0L durationMs)
+                                        LastCompletedAt = Some now
+                                        Status = status
+                                        Version = snapshot.Toys.Version + 1L
                                 }
                     })
 

@@ -1,5 +1,7 @@
 namespace LoLovenseRainbowBridge.Lovense
 
+open System
+
 type LovenseActionFunction =
     | Vibrate
     | Vibrate1
@@ -132,6 +134,23 @@ type LovenseDeviceInfo =
         HttpsPort: int option
         HttpPort: int option
         WssPort: int option
+    }
+
+type LovenseQrCodeSnapshot =
+    {
+        Qr: string
+        Code: string
+        ExpiresAt: DateTimeOffset
+    }
+
+type LovenseSessionSnapshot =
+    {
+        SocketInfo: SocketUrlInfo option
+        StandardQrCode: LovenseQrCodeSnapshot option
+        QrCodeLogged: bool
+        SupportedFunctions: Set<string> option
+        CapabilityProfiles: LovenseToyCapabilityProfile list
+        LatestDeviceInfo: LovenseDeviceInfo option
     }
 
 type LovenseCapabilityResolution =

@@ -62,6 +62,9 @@ type ToyCacheJob
                         new System.Net.Http.HttpClient()
 
                 while not ct.IsCancellationRequested do
+                    let startedAt = DateTimeOffset.UtcNow
+                    let iteration = cache.UpdateToyCycleStarted()
+
                     try
                         if not lovenseConfig.LocalApi.EnableGetToys then
                             cache.UpdateToyDisabled()
@@ -70,6 +73,7 @@ type ToyCacheJob
                                 "Toy cache job is disabled by configuration.",
                                 {| capabilityRefreshIntervalSec = lovenseConfig.LocalApi.CapabilityRefreshIntervalSec |}
                             )
+                            cache.UpdateToyCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Disabled")
                             do! Task.Delay(TimeSpan.FromSeconds(float lovenseConfig.LocalApi.CapabilityRefreshIntervalSec), ct)
                         else
                             match seedDeviceInfo () with
@@ -79,6 +83,7 @@ type ToyCacheJob
                                     "Toy cache job is waiting for Lovense device info or configured LAN endpoints before requesting GetToys.",
                                     {| capabilityRefreshIntervalSec = lovenseConfig.LocalApi.CapabilityRefreshIntervalSec |}
                                 )
+                                cache.UpdateToyCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Waiting")
                                 do! Task.Delay(TimeSpan.FromSeconds(float lovenseConfig.LocalApi.CapabilityRefreshIntervalSec), ct)
                             | Some deviceInfo ->
                                 let! result = LocalApi.getToysAsync http logger lovenseConfig.LocalApi deviceInfo ct
@@ -98,6 +103,7 @@ type ToyCacheJob
                                         "Toy cache refreshed from Lovense Local API.",
                                         {| toyCount = merged.ToyList.Length; version = toyState.Version; failureAttemptsSinceSuccess = toyState.FailureAttemptsSinceSuccess |}
                                     )
+                                    cache.UpdateToyCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Success")
 
                                     do! Task.Delay(TimeSpan.FromSeconds(float lovenseConfig.LocalApi.CapabilityRefreshIntervalSec), ct)
 
@@ -110,12 +116,14 @@ type ToyCacheJob
                                         "Toy cache refresh failed; keeping last known good toy capabilities.",
                                         {| error = string error; attemptSinceLastSuccess = toyState.FailureAttemptsSinceSuccess |}
                                     )
+                                    cache.UpdateToyCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Retrying")
 
                                     do! Task.Delay(TimeSpan.FromSeconds(float lovenseConfig.LocalApi.CapabilityRefreshIntervalSec), ct)
                     with
                     | :? OperationCanceledException -> ()
                     | ex ->
                         cache.UpdateToyFailure ex.Message
+                        cache.UpdateToyCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Error")
                         logger.Error(
                             "runtime.toy_job.error",
                             "Toy cache job hit an unexpected error.",

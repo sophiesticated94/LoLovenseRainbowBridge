@@ -83,6 +83,7 @@
     <Compile Include="App\Jobs\ToyCacheJob.fs" />
     <Compile Include="App\Jobs\LovenseJob.fs" />
     <Compile Include="App\QrWindow.fs" />
+    <Content Include="App\LovenseQrWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
 
     <Compile Include="Program.fs" />
   </ItemGroup>

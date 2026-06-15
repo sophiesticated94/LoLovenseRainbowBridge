@@ -26,6 +26,9 @@ type LeagueCacheJob
         member _.RunAsync(ct: CancellationToken) =
             task {
                 while not ct.IsCancellationRequested do
+                    let startedAt = DateTimeOffset.UtcNow
+                    let iteration = cache.UpdateLeagueCycleStarted()
+
                     try
                         let! fetchResult = leagueClient.FetchAllGameDataAsync ct
 
@@ -38,6 +41,7 @@ type LeagueCacheJob
                                 "League cache job could not fetch League data.",
                                 {| error = RuntimeState.leagueErrorSummary error; attemptSinceLastSuccess = current.FailureAttemptsSinceSuccess |}
                             )
+                            cache.UpdateLeagueCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Retrying")
                             do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
 
                         | Ok gameData ->
@@ -50,6 +54,7 @@ type LeagueCacheJob
                                     "League cache job fetched data but parser returned an error.",
                                     {| parseError = error; attemptSinceLastSuccess = current.FailureAttemptsSinceSuccess; rawLength = gameData.RawText.Length |}
                                 )
+                                cache.UpdateLeagueCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "ParseError")
                                 do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
 
                             | Ok parsed ->
@@ -59,6 +64,7 @@ type LeagueCacheJob
 
                                 generatorState <- evolve scoringConfig bridgeSnapshot generatorState
                                 cache.UpdateLeagueSuccess(bridgeSnapshot, leagueRules)
+                                cache.UpdateLeagueCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Success")
                                 logger.Debug(
                                     "runtime.league_job.success",
                                     "League cache updated.",
@@ -69,6 +75,7 @@ type LeagueCacheJob
                     | :? OperationCanceledException -> ()
                     | ex ->
                         cache.UpdateLeagueFailure ex.Message
+                        cache.UpdateLeagueCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Error")
                         logger.Error(
                             "runtime.league_job.error",
                             "League cache job hit an unexpected error.",

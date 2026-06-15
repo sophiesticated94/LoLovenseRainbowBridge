@@ -1240,7 +1240,10 @@ let ``lovense live socket api e2e can fetch device info and send guarded command
         | Error error ->
             failwithf "Lovense getSocketUrl failed: %A" error
 
-        use client = new LovenseClient(localLovenseConfig, scoringConfig, logger)
+        let runtimeCache = RuntimeState.RuntimeStateCache()
+        let readLovenseSession () = runtimeCache.Read().LovenseSession
+        let updateLovenseSession update = runtimeCache.UpdateLovenseSession(update (runtimeCache.Read().LovenseSession))
+        use client = new LovenseClient(localLovenseConfig, scoringConfig, logger, readLovenseSession, updateLovenseSession)
 
         try
             match client.EnsureConnectedAsync(cts.Token) |> fun task -> task.GetAwaiter().GetResult() with

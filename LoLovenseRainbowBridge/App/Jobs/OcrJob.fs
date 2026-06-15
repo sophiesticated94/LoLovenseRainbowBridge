@@ -61,6 +61,9 @@ type OcrCacheJob
         member _.RunAsync(ct: CancellationToken) =
             task {
                 while not ct.IsCancellationRequested do
+                    let startedAt = DateTimeOffset.UtcNow
+                    let iteration = cache.UpdateOcrCycleStarted()
+
                     try
                         if not positionRotationConfig.Enable then
                             cache.UpdateOcrDisabled()
@@ -69,6 +72,7 @@ type OcrCacheJob
                                 "OCR cache job is disabled by configuration.",
                                 {| ocrPollMs = runtimeConfig.OcrPollMs |}
                             )
+                            cache.UpdateOcrCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Disabled")
                             do! Task.Delay(runtimeConfig.OcrPollMs, ct)
                         else
                             let minimapRegion =
@@ -91,11 +95,13 @@ type OcrCacheJob
                                     "OCR cache job did not detect minimap position.",
                                     {| detectionMethod = detectionResult.DetectionMethod; detectionFailures = cache.Read().Ocr.DetectionFailures |}
                                 )
+                                cache.UpdateOcrCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Retrying")
 
                             | Some playerPosition ->
                                 match PositionMapping.parseMappingMode positionRotationConfig.MappingMode with
                                 | None ->
                                     cache.UpdateOcrFailure $"Invalid mapping mode: {positionRotationConfig.MappingMode}"
+                                    cache.UpdateOcrCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Error")
                                 | Some mode ->
                                     let rotationResult = PositionMapping.mapPositionToRotation playerPosition mode positionRotationConfig.RotationSensitivity
                                     let planningPosition : Lovense.LovensePlanningPosition =
@@ -114,12 +120,14 @@ type OcrCacheJob
                                         "OCR cache updated with minimap position.",
                                         {| normalizedX = planningPosition.NormalizedX; normalizedY = planningPosition.NormalizedY; quadrant = planningPosition.Quadrant; version = cache.Read().Ocr.Version |}
                                     )
+                                    cache.UpdateOcrCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Success")
 
                             do! Task.Delay(runtimeConfig.OcrPollMs, ct)
                     with
                     | :? OperationCanceledException -> ()
                     | ex ->
                         cache.UpdateOcrFailure ex.Message
+                        cache.UpdateOcrCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Error")
                         logger.Warn(
                             "runtime.ocr_job.error",
                             "OCR cache job hit a recoverable error.",

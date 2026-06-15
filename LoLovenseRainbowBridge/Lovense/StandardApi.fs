@@ -10,12 +10,7 @@ open System.Threading
 open System.Threading.Tasks
 open LoLovenseRainbowBridge
 
-type StandardApiQrCodeInfo =
-    {
-        Qr: string
-        Code: string
-        ExpiresAt: DateTimeOffset
-    }
+type StandardApiQrCodeInfo = LovenseQrCodeSnapshot
 
 type StandardApiCallbackServer =
     {

@@ -23,7 +23,6 @@ type LovenseRuleJob
         recordingConfigSummary: obj
     ) =
     let mutable lastSentFunctionState = LovenseActionCodec.emptyState
-    let mutable loopIteration = 0L
 
     let printStatus (snapshot: BridgeSnapshot) (breakdown: IntensityBreakdown) actionString =
         printfn
@@ -35,21 +34,20 @@ type LovenseRuleJob
             breakdown.Intensity
             actionString
 
-    let shouldForceKeepAlive (plan: LovenseCommandPlan) =
-        plan.Reasons |> List.exists ((=) SourceNotConnected)
-
     interface IAppJob with
         member _.Name = "LovenseRuleJob"
 
         member _.RunAsync(ct: CancellationToken) =
             task {
                 while not ct.IsCancellationRequested do
+                    let startedAt = DateTimeOffset.UtcNow
+                    let iteration = cache.UpdateLovenseCycleStarted()
+
                     try
                         let cacheSnapshot = cache.Read()
                         let now = DateTimeOffset.UtcNow
-                        let currentLoopIteration = loopIteration
-                        loopIteration <- loopIteration + 1L
-                        cache.UpdateLovenseClock(currentLoopIteration, now, runtimeConfig.LovensePollMs)
+                        cache.UpdateLovenseClock(iteration, now, runtimeConfig.LovensePollMs)
+
                         let activeSnapshot = cacheSnapshot.League.Snapshot |> Option.defaultValue RuntimeState.neutralSnapshot
 
                         let commandFrame =
@@ -60,7 +58,7 @@ type LovenseRuleJob
                                     EvolvedState = initialState
                                     Position = if cacheSnapshot.Ocr.DataAcquired then cacheSnapshot.Ocr.Position else None
                                     Now = now
-                                    LoopIteration = currentLoopIteration
+                                    LoopIteration = iteration
                                     LastSentFunctionState = lastSentFunctionState
                                     RuntimePollMs = runtimeConfig.LovensePollMs
                                 }
@@ -68,14 +66,16 @@ type LovenseRuleJob
                         logger.Debug(
                             "runtime.lovense_job.calculation",
                             "Lovense rule job calculated command frame from runtime cache.",
-                            {|
+                            {| 
                                 cache =
-                                    {|
-                                        lolDataAcquired = cacheSnapshot.League.DataAcquired
-                                        ocrDataAcquired = cacheSnapshot.Ocr.DataAcquired
-                                        lovenseDataAcquired = cacheSnapshot.Lovense.DataAcquired
+                                    {| 
+                                        lolDataAcquired = cacheSnapshot.RuntimeContext.LolDataAcquired
+                                        ocrDataAcquired = cacheSnapshot.RuntimeContext.OcrDataAcquired
+                                        lovenseDataAcquired = cacheSnapshot.RuntimeContext.LovenseDataAcquired
+                                        toyDataAcquired = cacheSnapshot.RuntimeContext.ToyDataAcquired
                                         leagueVersion = cacheSnapshot.League.Version
                                         ocrVersion = cacheSnapshot.Ocr.Version
+                                        toyVersion = cacheSnapshot.Toys.Version
                                     |}
                                 fullAction = commandFrame.ActionString
                                 changedAction = commandFrame.ChangedActionString
@@ -86,103 +86,73 @@ type LovenseRuleJob
                             |}
                         )
 
-                        let outgoing =
-                            match commandFrame.ChangedPlan with
-                            | Some changedPlan ->
-                                let changedActionString = LovenseActionCodec.planActionString changedPlan
-                                Some(changedPlan, changedActionString, false)
-                            | None when shouldForceKeepAlive commandFrame.Plan ->
-                                Some(commandFrame.Plan, commandFrame.ActionString, true)
-                            | None ->
-                                logger.Debug(
-                                    "runtime.lovense.no_function_changes",
-                                    "Lovense command skipped because no function intensity changed.",
-                                    {| fullAction = commandFrame.ActionString; fullFunctionState = commandFrame.FullFunctionState |}
-                                )
-                                None
+                        let outgoingPlan = commandFrame.Plan
+                        let outgoingActionString = commandFrame.ActionString
 
-                        match outgoing with
-                        | None ->
+                        let! result = lovenseClient.SendCommandPlanAsync(outgoingPlan, commandFrame.Breakdown.Intensity, commandFrame.RuleTraces, ct)
+
+                        match result with
+                        | Ok result ->
+                            lastSentFunctionState <- commandFrame.FullFunctionState
+                            cache.UpdateLovenseSuccess result.SocketConnected
+                            cache.UpdateLovenseCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Success")
+
+                            cacheSnapshot.League.Snapshot
+                            |> Option.iter (fun snapshot ->
+                                recorder
+                                |> Option.iter (fun recorder ->
+                                    recorder.RecordPlan(
+                                        now,
+                                        recordingConfigSummary,
+                                        snapshot,
+                                        commandFrame.Breakdown,
+                                        outgoingPlan,
+                                        outgoingActionString,
+                                        { Attempted = true; Success = Some true; Error = None }
+                                    )))
+
+                            logger.Info(
+                                "runtime.lovense_job.send_success",
+                                "Lovense command sent successfully.",
+                                {| changedAction = outgoingActionString; changedFunctionState = commandFrame.ChangedFunctionState; fullAction = commandFrame.ActionString |}
+                            )
+                            printStatus activeSnapshot commandFrame.Breakdown outgoingActionString
                             do! Task.Delay(runtimeConfig.LovensePollMs, ct)
-                        | Some(outgoingPlan, outgoingActionString, isKeepAlive) ->
-                            let! result = lovenseClient.SendCommandPlanAsync(outgoingPlan, commandFrame.Breakdown.Intensity, commandFrame.RuleTraces, ct)
 
-                            match result with
-                            | Ok result ->
-                                lastSentFunctionState <- commandFrame.FullFunctionState
-                                cache.UpdateLovenseSuccess result.SocketConnected
+                        | Error error ->
+                            cache.UpdateLovenseFailure(RuntimeState.lovenseErrorMessage error)
+                            cache.UpdateLovenseCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Retrying")
 
-                                cacheSnapshot.League.Snapshot
-                                |> Option.iter (fun snapshot ->
-                                    recorder
-                                    |> Option.iter (fun recorder ->
-                                        recorder.RecordPlan(
-                                            now,
-                                            recordingConfigSummary,
-                                            snapshot,
-                                            commandFrame.Breakdown,
-                                            outgoingPlan,
-                                            outgoingActionString,
-                                            { Attempted = true; Success = Some true; Error = None }
-                                        )))
+                            cacheSnapshot.League.Snapshot
+                            |> Option.iter (fun snapshot ->
+                                recorder
+                                |> Option.iter (fun recorder ->
+                                    recorder.RecordPlan(
+                                        now,
+                                        recordingConfigSummary,
+                                        snapshot,
+                                        commandFrame.Breakdown,
+                                        outgoingPlan,
+                                        outgoingActionString,
+                                        { Attempted = true; Success = Some false; Error = Some(RuntimeState.lovenseErrorMessage error) }
+                                    )))
 
-                                let successMessage =
-                                    if isKeepAlive then
-                                        "Lovense keepalive command sent successfully."
-                                    else
-                                        "Lovense diff command sent successfully."
+                            logger.Error(
+                                "runtime.lovense_job.send_failed",
+                                "Lovense command failed.",
+                                {| 
+                                    error = RuntimeState.lovenseErrorSummary error
+                                    changedAction = outgoingActionString
+                                    changedFunctionState = commandFrame.ChangedFunctionState
+                                |}
+                            )
+                            do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
 
-                                logger.Info(
-                                    "runtime.lovense_job.send_success",
-                                    successMessage,
-                                    {|
-                                        changedAction = outgoingActionString
-                                        changedFunctionState = commandFrame.ChangedFunctionState
-                                        fullAction = commandFrame.ActionString
-                                        keepAlive = isKeepAlive
-                                    |}
-                                )
-                                printStatus activeSnapshot commandFrame.Breakdown outgoingActionString
-                                do! Task.Delay(runtimeConfig.LovensePollMs, ct)
-
-                            | Error error ->
-                                cache.UpdateLovenseFailure(RuntimeState.lovenseErrorMessage error)
-
-                                cacheSnapshot.League.Snapshot
-                                |> Option.iter (fun snapshot ->
-                                    recorder
-                                    |> Option.iter (fun recorder ->
-                                        recorder.RecordPlan(
-                                            now,
-                                            recordingConfigSummary,
-                                            snapshot,
-                                            commandFrame.Breakdown,
-                                            outgoingPlan,
-                                            outgoingActionString,
-                                            { Attempted = true; Success = Some false; Error = Some(RuntimeState.lovenseErrorMessage error) }
-                                        )))
-
-                                let failureMessage =
-                                    if isKeepAlive then
-                                        "Lovense keepalive command failed; last sent function state was not advanced."
-                                    else
-                                        "Lovense diff command failed; last sent function state was not advanced."
-
-                                logger.Error(
-                                    "runtime.lovense_job.send_failed",
-                                    failureMessage,
-                                    {|
-                                        error = RuntimeState.lovenseErrorSummary error
-                                        changedAction = outgoingActionString
-                                        changedFunctionState = commandFrame.ChangedFunctionState
-                                        keepAlive = isKeepAlive
-                                    |}
-                                )
-                                do! Task.Delay(runtimeConfig.UnavailableRetryMs, ct)
                     with
                     | :? OperationCanceledException -> ()
                     | ex ->
                         cache.UpdateLovenseFailure ex.Message
+                        cache.UpdateLovenseCycleCompleted(iteration, int64 (DateTimeOffset.UtcNow - startedAt).TotalMilliseconds, "Error")
                         logger.Error(
                             "runtime.lovense_job.error",
                             "Lovense rule job hit an unexpected error.",
